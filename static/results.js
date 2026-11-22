@@ -1,7 +1,7 @@
 import {badge, btn, e, img, link, n, percent, plot, stat, table, date, dots} from "./widgets.js";
 
 const colors = ["#58836b","#b26a4a","#818d40","#786f99"];
-const layers = {overlay:"Measurement map",source:"Source plane",paired:"Paired plane",reference:"Reference image"};
+const layers = {overlay:"Measurement map",source:"Source plane",paired:"Paired plane",tertiary:"Third plane",reference:"Reference image"};
 
 export function metricSet(record) {
   const m = record.metrics;
@@ -26,6 +26,8 @@ export function metricSet(record) {
     joint: () => [["Measured stations",m.measured_stations],["Unmeasured stations",m.unmeasured_stations],["Median absolute contrast",n(m.median_absolute_step,4)]],
     blade: () => [["Marked axis",`${n(m.axis_length)} ${m.length_unit}`],["Largest visible width",m.maximum_width==null?"—":`${n(m.maximum_width)} ${m.length_unit}`],["Supported sections",`${m.observed_stations}/${m.requested_stations}`]],
     aggregate: () => [["Bright clusters",m.candidate_clusters],["Supported pixels",m.observed_pixels],["Bright fraction",percent(m.bright_fraction_of_support)]],
+    legacy: () => [["Adopted continuation",m.adopted_continuation==="drawn"?"Drawn trace":"Fork strike"],
+      ["Common visible px",n(m.common_support_pixels,0)],["Unclipped px",n(m.common_unclipped_pixels,0)]],
   }[record.kind]();
   return `<div class="metrics">${rows.map(([name,value])=>stat(name,value)).join("")}</div>`;
 }
@@ -56,6 +58,19 @@ function markingDetail(m) {
     ${table(["Condition",`From (${m.unit})`,`To (${m.unit})`,"Stations",`Median width (${m.unit})`],rows)}`;
 }
 
+function legacyDetail(m) {
+  const rows=m.runs.map(run=>[run.path,run.state,n(run.from_px,1),n(run.to_px,1),run.stations,n(run.length_mm,2)]);
+  const d=m.fork_decision;
+  return `<h3>Legacy rule vs fissure evidence</h3>
+    <p class="plot-note">${e(m.note)}</p>
+    <div class="metrics">${stat("Adopted continuation",m.adopted_continuation==="drawn"?"Drawn trace":"Fork strike")}
+      ${stat("Drawn branch legacy / crack",`${d.drawn_branch.legacy} / ${d.drawn_branch.crack_only}`)}
+      ${stat("Fork strike legacy / crack",`${d.strike_branch.legacy} / ${d.strike_branch.crack_only}`)}</div>
+    <p class="plot-note">${e(d.rule)}</p>
+    ${table(["Path","Evidence state","From (px)","To (px)","Stations","Length (mm)"],rows)}
+    <details><summary>Adaptive evidence thresholds</summary>${table(["Threshold","Value"],Object.entries(m.thresholds).map(([k,v])=>[k,n(v,5)]))}</details>`;
+}
+
 function jointDetail(m) {
   const rows=m.stations.map(item=>[n(item.position,1),n(item.left,4),n(item.right,4),n(item.right_minus_left,4),item.status]);
   return `<h3>Contrast along the mounting seam</h3><p class="plot-note">${e(m.note)}</p>
@@ -83,10 +98,12 @@ function defectsDetail(record) {
   return `<h3>Review local observations</h3>
     <div class="divider-list scroll-list">${markers.map(marker=>{
       const decision=record.decisions[marker.key]?.decision || "review";
-      return `<div class="row"><div class="grow"><strong>${e(marker.key)} · ${e(marker.type)}</strong><br><small>${n(marker.area_pixels,0)} px · ${e(marker.polarity)} · ${e(decision)}</small></div>
+      return `<div class="row"><div class="grow"><strong>${e(marker.key)} · ${e(marker.type)}</strong><br><small>${n(marker.area_pixels,0)} px · ${e(marker.polarity)} · ${e(decision)}</small>
+        <div class="legacy-breakdown" data-marker="${e(marker.key)}"></div></div>
         ${btn("Confirm","defect-choice","tiny secondary",null,`data-marker="${e(marker.key)}" data-value="confirm"`)}
         ${btn("Dismiss","defect-choice","tiny ghost",null,`data-marker="${e(marker.key)}" data-value="dismiss"`)}
-        ${btn("Note","defect-note","tiny ghost",null,`data-marker="${e(marker.key)}"`)}</div>`;
+        ${btn("Note","defect-note","tiny ghost",null,`data-marker="${e(marker.key)}"`)}
+        ${btn("Rule overlap","legacy-overlap","tiny ghost",null,`data-marker="${e(marker.key)}"`)}</div>`;
     }).join("")}</div>`;
 }
 
@@ -139,14 +156,14 @@ function details(record) {
     ]))}`,
     color:colorDetail,coverage:coverageDetail,defects:defectsDetail,glare:glareDetail,
     direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,craze:crazeDetail,rim:rimDetail,
-    marking:markingDetail,joint:jointDetail,aggregate:aggregateDetail,blade:bladeDetail,
+    marking:markingDetail,joint:jointDetail,aggregate:aggregateDetail,blade:bladeDetail,legacy:legacyDetail,
   }[record.kind];
   return render(record.kind==="defects" ? record : record.metrics);
 }
 
 export function resultCard(record, layer, currentRevision) {
   const path=`/api/results/${record.id}`;
-  const available = ["overlay","source",...(record.pictures.paired ? ["paired"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
+  const available = ["overlay","source",...(record.pictures.paired ? ["paired"] : []),...(record.pictures.tertiary ? ["tertiary"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
   const old = record.source_version !== currentRevision;
   return `<section class="card stack">
     <div class="title-row"><div><h3>${e(record.label)}</h3><small>Specimen revision ${record.source_version} · ${e(date(record.created_at))}</small></div>${old ? badge("Earlier specimen revision","caution") : badge("Saved measurement","ready")}</div>

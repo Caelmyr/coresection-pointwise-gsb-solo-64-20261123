@@ -23,6 +23,7 @@ from .coverage import measure_coverage
 from .blade import blade_width
 from .defects import measure_defects
 from .craze import measure_craze
+from .legacy import Frames, measure_legacy
 from .rim import measure_rim
 from .geometry import active_region, analysis_mask, region_domain, specimen_frame
 from .lighting import measure_direction, measure_glare
@@ -136,10 +137,20 @@ def resolve_parameters(store, tile, payload):
     kind = params["kind"]
     setting = TOOLS[kind]
     roles = setting.get("capture_pair")
+    triple = setting.get("capture_triple")
     params["photo_id"] = selected_capture(tile, params["photo_id"], roles[0] if roles else None)
     params["comparison_id"] = selected_capture(tile, params["comparison_id"], roles[1]) if roles else None
-    if not roles and payload.get("comparison_id"):
+    if triple:
+        params["photo_id"] = selected_capture(tile, params["photo_id"], triple[0])
+        params["comparison_id"] = selected_capture(tile, params["comparison_id"], triple[1])
+        params["tertiary_id"] = selected_capture(tile, params["tertiary_id"], triple[2])
+        chosen = (params["photo_id"], params["comparison_id"], params["tertiary_id"])
+        if len(set(chosen)) != 3:
+            raise InputError("Legacy rule separation needs three distinct diffuse, rake-left and rake-right photos.")
+    elif not roles and payload.get("comparison_id"):
         raise InputError("This measurement uses one capture.")
+    if not triple and payload.get("tertiary_id"):
+        raise InputError("This measurement does not use a third capture.")
     reference = None
     if kind == "reference":
         reference = store.reference(params["options"]["reference_id"])
@@ -272,9 +283,15 @@ def evaluate(store, tile_id, payload):
     region = active_region(tile, params["region_id"])
     area = region_domain(frame.extent, tile, region)
     pair = specimen_frame(store.blobs, tile, params["comparison_id"]) if params["comparison_id"] else None
+    triple = specimen_frame(store.blobs, tile, params["tertiary_id"]) if params["tertiary_id"] else None
     correction = None
     linear = frame.linear
-    if pair is not None:
+    if params["kind"] == "legacy":
+        if pair is None or triple is None:
+            raise InputError("Legacy rule separation needs the two raking-light captures as well.")
+        frames = Frames(diffuse=frame, rake_left=pair, rake_right=triple)
+        metrics, picture, legend = measure_legacy(store, tile, frames, area, params["options"])
+    elif pair is not None:
         metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
     else:
         linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
@@ -294,6 +311,7 @@ def evaluate(store, tile_id, payload):
             "specimen": specimen_provenance(tile),
             "photo": capture_provenance(frame),
             "paired_photo": capture_provenance(pair) if pair else None,
+            "tertiary_photo": capture_provenance(triple) if triple else None,
             "region": region,
             "exclusions": [item for item in tile["regions"] if item["purpose"] == "ignore"],
             "neutral_card": correction,
@@ -309,6 +327,7 @@ def evaluate(store, tile_id, payload):
             "source": stored_preview(base_rgba(frame, linear), store.blobs),
             "overlay": stored_preview(picture, store.blobs),
             "paired": stored_preview(base_rgba(pair), store.blobs) if pair else None,
+            "tertiary": stored_preview(base_rgba(triple), store.blobs) if triple else None,
         },
     }
     return store.save_result(cache_key, result)

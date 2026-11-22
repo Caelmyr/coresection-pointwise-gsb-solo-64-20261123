@@ -1,4 +1,14 @@
-from .model import dictionary, enumeration, flag, identity, integer, numeric_pair, scalar
+from .model import (
+    InputError,
+    collection,
+    dictionary,
+    enumeration,
+    flag,
+    identity,
+    integer,
+    numeric_pair,
+    scalar,
+)
 
 
 TOOLS = {
@@ -165,6 +175,41 @@ TOOLS.update({
 })
 
 
+LEGACY_DEFAULTS = {
+    "trace": [[.18, .55], [.42, .52], [.62, .46], [.82, .40]],
+    "fork_strike": [[.42, .52], [.55, .66]],
+}
+LEGACY_THRESHOLD_FIELDS = {
+    "radius": {"kind": "integer", "label": "Cross-section half width px", "default": 7, "min": 2, "max": 40},
+    "spacing_px": {"kind": "number", "label": "Station spacing px", "default": 2.0, "min": 0.8, "max": 12.0, "step": 0.1},
+    "diffuse_floor": {"kind": "number", "label": "Diffuse darkness floor", "default": 0.022,
+                      "min": 0.004, "max": 0.35, "step": 0.001},
+    "flip_floor": {"kind": "number", "label": "Raking flip floor", "default": 0.03,
+                   "min": 0.005, "max": 0.6, "step": 0.005},
+    "rake_dark_floor": {"kind": "number", "label": "Raking darkness floor", "default": 0.018,
+                        "min": 0.004, "max": 0.35, "step": 0.001},
+}
+TOOLS["legacy"] = {
+    "label": "Legacy rule separation",
+    "description": (
+        "Separate a hand-drawn grey rule from a thin fissure using the diffuse front and both "
+        "raking-light captures on their common visible area. At the fork only one strike keeps "
+        "legacy continuity; the other is downgraded to crack-only or unclear evidence."
+    ),
+    "capture_triple": ["diffuse", "rake-left", "rake-right"],
+    "fields": {
+        "trace": {"kind": "path", "label": "Trunk and drawn continuation", "default": LEGACY_DEFAULTS["trace"]},
+        "fork_strike": {"kind": "strike", "label": "Competing fork strike", "default": LEGACY_DEFAULTS["fork_strike"]},
+        **LEGACY_THRESHOLD_FIELDS,
+    },
+}
+
+
+def point_series(value, label, *, minimum, maximum):
+    points = collection(value, label, minimum=minimum, maximum=maximum)
+    return [numeric_pair(item, label, lower=0, upper=1) for item in points]
+
+
 def parsed_option(key, field, raw):
     label = field["label"]
     kind = field["kind"]
@@ -178,6 +223,16 @@ def parsed_option(key, field, raw):
         return flag(raw, label)
     if kind == "point":
         return numeric_pair(raw, label, lower=0, upper=1)
+    if kind == "path":
+        points = point_series(raw, label, minimum=2, maximum=60)
+        if len({tuple(point) for point in points}) != len(points):
+            raise InputError("The trace path cannot repeat a vertex.")
+        return points
+    if kind == "strike":
+        points = point_series(raw, label, minimum=2, maximum=2)
+        if points[0] == points[1]:
+            raise InputError("The fork strike needs two distinct points.")
+        return points
     if kind == "region":
         return identity(raw, label) if raw else None
     if kind == "reference":
@@ -200,5 +255,6 @@ def analysis_parameters(payload):
         "region_id": identity(raw["region_id"], "Sampling region") if raw.get("region_id") else None,
         "photo_id": identity(raw["photo_id"], "Photo ID") if raw.get("photo_id") else None,
         "comparison_id": identity(raw["comparison_id"], "Paired photo ID") if raw.get("comparison_id") else None,
+        "tertiary_id": identity(raw["tertiary_id"], "Third photo ID") if raw.get("tertiary_id") else None,
         "apply_neutral": flag(raw.get("apply_neutral", True), "Apply card correction"),
     }

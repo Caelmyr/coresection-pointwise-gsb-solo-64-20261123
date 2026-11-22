@@ -56,6 +56,7 @@ ANALYSIS_LABELS = {
     "joint": "Mount seam scan",
     "blade": "Vein width",
     "aggregate": "Pale mineral flecks",
+    "legacy": "Legacy rule separation",
 }
 
 

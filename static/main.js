@@ -135,21 +135,36 @@ function optionInput(key,item) {
   if (kind==="reference") return selectField(label,key,option("","Choose a reference","")+state.refs.map(record=>option(record.id,record.title)).join(""));
   if (kind==="point") return `<div class="field"><span>${e(label)} (X, Y)</span><div class="point-group">
     ${value.map((coordinate,index)=>`<input name="${key}-${index}" aria-label="${e(label)} ${index===0?"X":"Y"}" type="number" min="0" max="1" step=".001" value="${coordinate}">`).join("")}</div></div>`;
+  if (kind==="path"||kind==="strike") {
+    const points=Array.isArray(value)?value:[];
+    return `<div class="field"><span>${e(label)} (normalized X, Y)</span>
+      <input type="hidden" name="${key}" data-points='${e(JSON.stringify(points))}' value='${e(JSON.stringify(points))}'>
+      <small class="soft">${points.length} point(s) marked · draw on the image or edit JSON</small></div>`;
+  }
   return "";
 }
 
 function measureControls() {
   const tool=state.config.tools[state.tool];
   const all=state.tile.photos.filter(item=>item.registered_url);
-  const match=field=>sources(tool.capture_pair?all.filter(item=>item.role===tool.capture_pair[field]):all,null,tool.capture_pair?"Auto if unique":"Base capture");
+  const triple=tool.capture_triple;
+  const match=(index,role)=>sources(all.filter(item=>item.role===role),null,
+    triple?`Auto if a unique ${role} capture exists`:"Base capture");
+  const photoFields=triple
+    ? [["photo_id","Diffuse front",match(0,triple[0])],
+       ["comparison_id","Raking light from left",match(1,triple[1])],
+       ["tertiary_id","Raking light from right",match(2,triple[2])]]
+        .map(([name,label,choices])=>selectField(label,name,choices)).join("")
+    : `${selectField(tool.capture_pair?"First photo":"Photo source","photo_id",match(0))}
+    ${tool.capture_pair?selectField("Paired photo","comparison_id",match(1)):checkField("Apply saved neutral balance","apply_neutral",true)}`;
   return `<form id="measurement-form" class="form-stack">
     ${selectField("Measurement","kind",Object.entries(state.config.tools).map(([name,item])=>option(name,item.label,state.tool)).join(""))}
     <p class="soft">${e(tool.description)}</p>
-    ${selectField(tool.capture_pair?"First photo":"Photo source","photo_id",match(0))}
-    ${tool.capture_pair?selectField("Paired photo","comparison_id",match(1)):checkField("Apply saved neutral balance","apply_neutral",true)}
+    ${photoFields}
     ${selectField("Region","region_id",regions())}
     <div class="form-columns">${Object.entries(tool.fields).map(([key,item])=>optionInput(key,item)).join("")}</div>
     ${["profile","marking","joint","blade"].includes(state.tool)?btn("Mark line on image","mark-profile","secondary","measure"):""}
+    ${state.tool==="legacy"?btn("Draw rule trace and fork strike","mark-legacy","secondary","measure"):""}
     <button class="button primary" type="submit">${icon("measure")}Run measurement</button>
   </form>`;
 }
@@ -470,6 +485,55 @@ function lineForm() {
   prepareDrawing([start,end],2);
 }
 
+function syncHiddenPoints(name, points) {
+  const fieldEl=q(`input[name="${name}"]`);
+  if (!fieldEl) return;
+  const payload=JSON.stringify(points.map(([x,y])=>[Number(x),Number(y)]));
+  fieldEl.value=payload;
+  fieldEl.dataset.points=payload;
+  const note=fieldEl.closest(".field")?.querySelector("small");
+  if (note) note.textContent=`${points.length} point(s) marked · draw on the image or edit JSON`;
+}
+
+function readHiddenPoints(name, fallback) {
+  const fieldEl=q(`input[name="${name}"]`);
+  if (!fieldEl) return fallback;
+  try { const parsed=JSON.parse(fieldEl.value||"[]"); return Array.isArray(parsed)&&parsed.length?parsed:fallback; }
+  catch { return fallback; }
+}
+
+function legacyTraceForm() {
+  const form=q("#measurement-form");
+  const id=form.elements.photo_id.value;
+  const base=state.tile.photos.find(item=>id ? item.id===id : item.registration_state==="base");
+  if (!base) throw Error("Select a diffuse capture before drawing the rule trace.");
+  const initial=readHiddenPoints("trace",state.config.tools.legacy.fields.trace.default);
+  modal("Mark the legacy rule trace",
+    `<p class="notice">Click the grey rule along its trunk and then along the strike that appears to continue it. Mark at least two points; the fork junction must stay interior to this polyline.</p>
+    ${drawing(base.registered_url,"Specimen plane for legacy rule trace")}
+    <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Continue to fork strike",async ()=>{
+      if (drawPoints.length<2) throw Error("Mark at least the trunk start, junction and continuation end.");
+      syncHiddenPoints("trace",drawPoints);
+      legacyForkForm(base);
+    },true);
+  prepareDrawing(initial,60);
+}
+
+function legacyForkForm(base) {
+  const initial=readHiddenPoints("fork_strike",state.config.tools.legacy.fields.fork_strike.default);
+  modal("Mark the competing fork strike",
+    `<p class="notice">Mark exactly two points along the other strike at the fork, beginning at (or beside) the junction. Only one of the two branches can remain the legacy rule's continuation.</p>
+    ${drawing(base.registered_url,"Specimen plane for fork strike")}
+    <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Use fork strike",async ()=>{
+      if (drawPoints.length!==2) throw Error("Mark exactly two points for the fork strike.");
+      syncHiddenPoints("fork_strike",drawPoints);
+      commitModal();
+    },true);
+  prepareDrawing(initial,2);
+}
+
 function neutralForm() {
   const available=state.tile.regions.filter(item=>item.purpose==="neutral");
   if (!available.length) throw Error("Draw a region marked Neutral color card first.");
@@ -627,6 +691,10 @@ async function studyForm() {
 function parsedOptions(data,tool) {
   return Object.fromEntries(Object.entries(tool.fields).map(([key,config])=>{
     if (config.kind==="point") return [key,[Number(data.get(key+"-0")),Number(data.get(key+"-1"))]];
+    if (config.kind==="path"||config.kind==="strike") {
+      try { return [key,JSON.parse(data.get(key)||"[]")]; }
+      catch { throw Error(`${config.label} holds invalid point data.`); }
+    }
     if (config.kind==="integer"||config.kind==="number") return [key,Number(data.get(key))];
     if (config.kind==="flag") return [key,data.has(key)];
     return [key,data.get(key)||null];
@@ -637,6 +705,7 @@ async function runMeasurement(data) {
   const revision=travel;
   const result=await api(tileUrl()+"/results",{method:"POST",body:{
     kind:state.tool,photo_id:data.get("photo_id")||null,comparison_id:data.get("comparison_id")||null,
+    tertiary_id:data.get("tertiary_id")||null,
     region_id:data.get("region_id")||null,apply_neutral:data.has("apply_neutral"),
     options:parsedOptions(data,state.config.tools[state.tool]),
   }});
@@ -711,6 +780,7 @@ async function doAction(name,target) {
       });
     },
     "mark-profile":lineForm,
+    "mark-legacy":legacyTraceForm,
     "trace-add":()=>geometryMeasurementForm("trace"),
     "area-add":()=>geometryMeasurementForm("area"),
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
@@ -738,6 +808,18 @@ async function doAction(name,target) {
       state.result=await api(`/api/results/${state.result.id}/observations/${marker}`,{method:"PUT",body:{version:state.result.version,decision:value,notes:""}});
       toast("Observation reviewed.");
       render();
+    },
+    "legacy-overlap":async ()=>{
+      const legacyRuns=state.results.filter(item=>item.kind==="legacy");
+      if (!legacyRuns.length) throw Error("Save a Legacy rule separation measurement for this specimen first.");
+      const current=legacyRuns[0];
+      const breakdown=await api(`/api/results/${state.result.id}/legacy-overlap`,{method:"POST",body:{
+        legacy_result_id:current.id,observation_key:marker,
+      }});
+      const host=q(`.legacy-breakdown[data-marker="${marker}"]`);
+      if (host) host.innerHTML=`<small><strong>${e(current.label)}</strong> · ${n(breakdown.footprint_pixels,0)} footprint px</small><br>
+        <small>Legacy ${percent(breakdown.percent.legacy)} · Crack-only ${percent(breakdown.percent.crack_only)} · Unclear ${percent(breakdown.percent.unclear)} · Common untraced ${percent(breakdown.percent.common_untraced)} · No photo evidence ${percent(breakdown.no_photo_evidence_percent)}</small>`;
+      toast(`Footprint split for ${marker}.`);
     },
     pin:pinForm,
     "study-add":studyForm,

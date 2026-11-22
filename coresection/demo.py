@@ -12,7 +12,7 @@ from .store import make_id
 from .photos import store_capture
 
 
-DEMO_KEY = "coresection.training.v1"
+DEMO_KEY = "coresection.training.v2"
 PLANE_SIZE = (620, 472)
 PHOTO_SIZE = (766, 598)
 DEMO_ROLES = ("diffuse", "parallel", "cross", "rake-left", "rake-right")
@@ -102,6 +102,29 @@ def folio_marks(x, y, rng):
     return sheet, tape_1 | tape_2
 
 
+def polyline_band(x, y, vertices, half_width):
+    """Mask of normalized points within half_width of a polyline."""
+    band = np.zeros(x.shape, dtype=bool)
+    for (x0, y0), (x1, y1) in zip(vertices, vertices[1:]):
+        dx, dy = x1 - x0, y1 - y0
+        length2 = dx * dx + dy * dy
+        ratio = np.clip(((x - x0) * dx + (y - y0) * dy) / length2, 0.0, 1.0)
+        nearest_x = x0 + ratio * dx
+        nearest_y = y0 + ratio * dy
+        band |= np.hypot(x - nearest_x, y - nearest_y) <= half_width
+        band &= (x >= min(x0, x1) - half_width) & (x <= max(x0, x1) + half_width)
+        band &= (y >= min(y0, y1) - half_width) & (y <= max(y0, y1) + half_width)
+    return band
+
+
+# A hand-drawn grey rule forks: one strike keeps the pencil continuity,
+# the competing strike is a relief fissure that only flips under raking light.
+PENCIL_TRUNK = ((.205, .335), (.300, .350), (.398, .382))
+PENCIL_CONTINUATION = ((.398, .382), (.560, .407), (.745, .438))
+PENCIL_FORK_STRIKE = ((.398, .382), (.505, .505), (.648, .596))
+FISSURE_TRACE = ((.398, .382), (.505, .505), (.648, .596))
+
+
 def bake_field(specimen):
     width, height = PLANE_SIZE
     shape = (height, width)
@@ -144,6 +167,16 @@ def bake_field(specimen):
         rock[hole] *= np.clip(.075 + .11*kernel[hole,None], .02, .24)
     scribe = section & (np.abs(y-(.435+.014*np.sin(16*x)))<.0024) & (x>.275)&(x<.762)
     rock[scribe] *= .27
+    # Forking hand-drawn grey pencil rule: a surface pigment that darkens every capture.
+    pencil_trunk = polyline_band(x, y, PENCIL_TRUNK, .0060)
+    pencil_kept = polyline_band(x, y, PENCIL_CONTINUATION, .0056)
+    pencil_rule = section & (pencil_trunk | pencil_kept)
+    # A graphite grey that stays clearly below the surrounding rock lightness in every lighting.
+    pencil_tone = np.clip(0.07 + 0.02 * mottling, 0.04, 0.12)
+    rock[pencil_rule] = rock[pencil_rule] * 0.28 + pencil_tone[pencil_rule, None] * [0.94, 0.95, 0.98]
+    # The competing strike is a genuine thin fissure: negligible pigment, real relief.
+    fissure_line = polyline_band(x, y, FISSURE_TRACE, .0016) & section
+    rock[fissure_line] *= .985
     cross = np.zeros(shape, dtype=bool)
     for cx in (.086,.919):
         for cy in (.171,.797):
@@ -151,10 +184,13 @@ def bake_field(specimen):
     diffuse = np.where(section[...,None], rock, sheet)
     diffuse[cross] = [.055, .059, .052]
     relief = (.042 * boundaries + .020 * bedding + .032 * broad + .011*mottling) * section
+    # Raised rim along the fissure so the raking pair flips sign while diffuse stays flat.
+    fissure_relief = ndimage.gaussian_filter(fissure_line.astype(np.float32), 0.8)
+    relief = relief + .34 * fissure_relief
     roughness = np.where(section, np.clip(.59 + .12*mottling + .1*boundaries, .31, .92), .79)
     neutral_card(diffuse,roughness,x,y)
     return ProofField(np.clip(diffuse,0,1),relief,np.where(section,.48+.28*vein,.035),
-                      (tape|cross|scribe).astype(np.float32),roughness,x,y)
+                      (tape|cross|scribe|pencil_rule).astype(np.float32),roughness,x,y)
 
 
 def gloss_reflection(field, role):

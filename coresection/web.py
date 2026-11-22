@@ -22,6 +22,7 @@ from .evidence import (
 from .inspection import side_preview, viewing_pair
 from .art import base_rgba
 from .intake import MAX_ARCHIVE_BYTES, inspect_packet
+from .legacy import footprint_overlap
 from .metrology import create_metrology
 from .model import (
     ANALYSIS_LABELS,
@@ -252,7 +253,7 @@ def register_measurements(api, store, heavy):
     @api.get("/results/<measurement_id>/image/<layer>")
     def measurement_image(measurement_id, layer):
         data = store.result(measurement_id)
-        chosen = enumeration(layer, ("overlay", "source", "paired", "reference"), "Measurement image")
+        chosen = enumeration(layer, ("overlay", "source", "paired", "tertiary", "reference"), "Measurement image")
         digest = data["metrics"].get("reference_image") if chosen == "reference" else data["pictures"][chosen]
         return png_blob(store, digest)
 
@@ -284,6 +285,16 @@ def register_measurements(api, store, heavy):
         with heavy:
             record = save_reviews(store, measurement_id, model_version(data), choices)
         return jsonify(record)
+
+    @api.post("/results/<measurement_id>/legacy-overlap")
+    def legacy_footprint(measurement_id):
+        data = json_request()
+        legacy_record = store.result(identity(data.get("legacy_result_id"), "Legacy measurement ID"))
+        defect_record = store.result(measurement_id)
+        observation_key = string(data.get("observation_key"), "Observation key", maximum=8)
+        with heavy:
+            breakdown = footprint_overlap(store, legacy_record, defect_record, observation_key)
+        return jsonify(breakdown)
 
     @api.get("/library")
     def references():

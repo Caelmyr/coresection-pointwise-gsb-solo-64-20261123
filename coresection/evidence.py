@@ -93,6 +93,9 @@ def result_metrics_table(record):
         fields = ("condition", "first_station", "last_station", "stations", "midpoint_normalized", "median_cross_width")
         columns = ("unit", *fields)
         rows = ([metrics["unit"], *(item[key] for key in fields)] for item in metrics["runs"])
+    elif kind == "legacy":
+        columns = ("path", "state", "from_px", "to_px", "stations", "length_mm", "midpoint_normalized")
+        rows = ([item[key] for key in columns] for item in metrics["runs"])
     elif kind == "joint":
         fields = ("position", "left", "right", "right_minus_left", "status", "normalized_position")
         columns = ("unit", *fields)
@@ -310,6 +313,7 @@ def summarize_result(record):
         "joint": ("measured_stations", "unmeasured_stations", "median_absolute_step"),
         "blade": ("axis_length", "maximum_width", "observed_stations"),
         "aggregate": ("candidate_clusters", "observed_pixels", "bright_fraction_of_support"),
+        "legacy": ("adopted_continuation", "common_support_pixels", "junction_normalized"),
     }[record["kind"]]
     summary = {key: record[key] for key in (
         "id", "kind", "label", "tile_id", "source_version", "created_at", "version", "basis",
