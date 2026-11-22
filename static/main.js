@@ -1,7 +1,7 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",release:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -160,9 +160,18 @@ function measurements() {
 }
 
 function evidencePage() {
-  return `<div class="grid-detail"><section class="card"><div class="title-row"><h3>Pinned evidence</h3>${btn("Pin evidence","pin","primary","archive")}</div>
-    ${state.packets.length?`<div class="divider-list">${state.packets.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.title)}</strong><small>${item.count} measurements · ${e(date(item.created_at))}</small></div>
-    ${link("View report",`/api/evidence/${item.id}/inspection.html`,"tiny secondary","book")}${link("ZIP",`/api/evidence/${item.id}/archive.zip`,"tiny secondary","download")}</div>`).join("")}</div>`:empty("Pin a packet from saved measurements to keep a dated copy of the observations.")}</section>
+  const rows=(state.packets||[]).map(item=>{
+    const crop=item.packet_kind==="crop_release";
+    const detail=crop
+      ? `Crop ${item.crop.width} × ${item.crop.height} px at (${item.crop.left}, ${item.crop.top}) · ruler ${item.crop.ruler_fully_retained?"fully retained":n(item.crop.ruler_retained_percent)+"% kept"} · ${item.crop.bands_excluded} band(s) excluded`
+      : `${item.count} measurements`;
+    return `<div class="row"><div class="grow"><strong class="row-title">${e(item.title)}</strong>
+      ${badge(crop?"Partial crop":"Full report",crop?"caution":"ready")}<br><small>${e(detail)} · ${e(date(item.created_at))}</small></div>
+    ${link("View report",`/api/evidence/${item.id}/inspection.html`,"tiny secondary","book")}${link("ZIP",`/api/evidence/${item.id}/archive.zip`,"tiny secondary","download")}</div>`;
+  }).join("");
+  return `<div class="grid-detail"><section class="card"><div class="title-row"><h3>Pinned evidence</h3>
+      <div class="actions">${btn("Pin evidence","pin","secondary","archive")}${btn("Crop evidence packet","release-add","primary","frame")}</div></div>
+    ${rows?`<div class="divider-list">${rows}</div>`:empty("Pin a full report, or build a redacted 900 × 650 crop packet that keeps the crack tip and core-number ruler out of the confidentiality bands.")}</section>
     <section class="card"><h3>Specimen activity</h3><div class="divider-list scroll-list">${(state.activity||[]).map(row=>`<div class="row"><div class="grow"><strong>${e(row.message)}</strong><br><small>${e(date(row.recorded_at))}</small></div></div>`).join("")}</div></section></div>`;
 }
 
@@ -190,6 +199,40 @@ function geometryPage() {
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
 }
 
+function receivedCropView(chosen, path) {
+  const crop=chosen.crop;
+  const readingRows=table(["Measurement","Type","Revision"],chosen.readings.map(item=>[
+    item.descriptor.label,
+    state.config?.analysis_labels?.[item.descriptor.kind]||item.descriptor.kind,
+    item.descriptor.source_version,
+  ]));
+  return `<section class="card stack">
+    <div class="title-row"><h3>${e(chosen.title)}</h3>${badge("Crop packet","caution")}${badge("Digests match","ready")}</div>
+    <p class="notice"><strong>Partial crop, not the original photograph.</strong> One continuous ${crop.width} × ${crop.height} pixel window of a ${chosen.capture.width} × ${chosen.capture.height} px capture. The full original is not inside this ZIP.</p>
+    <p>${e(chosen.specimen)} · revision ${chosen.specimen_revision} · ${e(chosen.capture.name)}</p>
+    ${chosen.notes?`<p class="notice">${e(chosen.notes)}</p>`:""}
+    ${img(path+"/crop/image","Continuous 900 by 650 pixel evidence crop")}
+    <div class="metrics">
+      ${stat("Crop upper-left",`(${crop.left}, ${crop.top})`)}
+      ${stat("Crop size",`${crop.width} × ${crop.height} px`)}
+      ${stat("Bands excluded",crop.bands_excluded)}
+      ${stat("Ruler kept",crop.ruler_fully_retained?"Full":n(crop.ruler_retained_percent)+"%")}
+      ${stat("Tip clearance",n(crop.crack_tip_margin_px,1)+" px")}
+    </div>
+    <h4>Pinned readings</h4>${readingRows}
+    <p class="soft">In-packet checks confirm every member digest, the crop geometry, the band exclusion and the report. Position and content against the original capture can only be confirmed later, on the internal network, with the same-session original.</p>
+    <div class="card stack" style="background:#f1efe4">
+      <h4>Intranet original comparison</h4>
+      <p class="soft">Upload the retained original from the same photo session to re-cut the declared window and compare pixels.</p>
+      <form id="compare-form" class="form-stack">
+        ${field("Original capture","original",'<input id="field-original" name="original" type="file" accept="image/png,image/jpeg,image/tiff,image/webp" required>')}
+        <button class="button primary" type="submit">Compare with original</button>
+      </form>
+      <div id="compare-result"></div>
+    </div>
+  </section>`;
+}
+
 function receivedPage() {
   const items=state.received||[];
   const chosen=state.receivedActive;
@@ -197,7 +240,9 @@ function receivedPage() {
   let view=empty("Open an inspection ZIP to check its declared images and specimen details.",actions);
   if (chosen) {
     const path=`/api/received/${chosen.id}`;
-    view=`<section class="card stack"><div class="title-row"><h3>${e(chosen.title)}</h3>${badge("Digests match","ready")}</div>
+    view = chosen.packet_kind==="crop_release"
+      ? receivedCropView(chosen, path)
+      : `<section class="card stack"><div class="title-row"><h3>${e(chosen.title)}</h3>${badge("Full report","ready")}${badge("Digests match","ready")}</div>
       <p>${e(chosen.specimen)} · revision ${chosen.specimen_revision}</p>
       ${chosen.notes?`<p class="notice">${e(chosen.notes)}</p>`:""}
       ${chosen.sheets.map((item,index)=>img(path+`/sheet/${index+1}`,`Received evidence sheet ${index+1}`)).join("")}
@@ -537,7 +582,7 @@ function geometryMeasurementForm(mode) {
 
 function importEvidence() {
   modal("Verify evidence ZIP",field("Evidence ZIP","packet",'<input id="field-packet" name="packet" type="file" accept="application/zip,.zip" required>')+
-    '<p class="soft">Select a CoreSection inspection archive up to 24 MiB. The viewer checks the declared images against their embedded digests.</p>',
+    '<p class="soft">Select a CoreSection inspection or redacted-crop archive up to 24 MiB. The viewer checks declared images against their embedded digests; crop packets are additionally checked for the fixed 900 × 650 window, band exclusion and report wording.</p>',
     "Verify archive",async data=>{
       state.receivedActive=await api("/api/received",{method:"POST",body:data});
       state.received=(await api("/api/received")).items;
@@ -590,6 +635,112 @@ function pinForm() {
       toast("Inspection evidence pinned.");
       render();
     });
+}
+
+const RELEASE_TOOLS=[
+  ["band","Confidentiality band","#893f34"],
+  ["ruler","Core-number ruler","#377360"],
+  ["tip","Crack tip","#d98a3d"],
+];
+
+function releaseMarks() {
+  return state.release || {photo_id:currentPhoto()?.id, bands:[], ruler:null, crack_tip:null};
+}
+
+function releaseSvg(marks, geometry) {
+  const rect=(r,color,key)=>(r?`<rect data-kind="${key}" x="${r.left*1000}" y="${r.top*1000}" width="${(r.right-r.left)*1000}" height="${(r.bottom-r.top)*1000}" fill="${color}33" stroke="${color}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`:"");
+  const bands=marks.bands.map((r,i)=>rect(r,"#893f34","band")+`<text x="${r.left*1000+6}" y="${r.top*1000+26}" fill="#f3d4cf" font-size="26" font-weight="700">B${i+1}</text>`).join("");
+  const tip=marks.crack_tip?`<circle cx="${marks.crack_tip[0]*1000}" cy="${marks.crack_tip[1]*1000}" r="9" fill="#d98a3d" stroke="#1f3127" stroke-width="2" vector-effect="non-scaling-stroke"/>`:"";
+  const crop=geometry?`<rect x="${geometry.left/marks.photo_width*1000}" y="${geometry.top/marks.photo_height*1000}" width="${geometry.width/marks.photo_width*1000}" height="${geometry.height/marks.photo_height*1000}" fill="none" stroke="#f4c96d" stroke-width="4" stroke-dasharray="14 8" vector-effect="non-scaling-stroke"/>`:"";
+  return `<svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="release-overlay">${bands}${rect(marks.ruler,"#377360","ruler")}${tip}${crop}</svg>`;
+}
+
+function releaseForm() {
+  if (!state.tile.photos.length) throw Error("Add the marked photograph first.");
+  if (!state.results.length) throw Error("Run and save a measurement before building a crop packet.");
+  state.release={photo_id:currentPhoto()?.id||state.tile.photos[0].id, bands:[], ruler:null, crack_tip:null, tool:"band", drag:null, geometry:null, error:""};
+  const photo=()=>state.tile.photos.find(item=>item.id===state.release.photo_id);
+  const readingRows=state.results
+    .map(item=>`<label class="row field check"><input type="checkbox" name="result_id" value="${item.id}" checked>
+      <span class="grow">${e(item.label)} · revision ${item.source_version}</span></label>`).join("")
+    || "<p class='soft'>No saved measurements. Run one in Measure first.</p>";
+  modal("Build redacted crop evidence",`
+    <p class="notice warn">The packet exports one continuous 900 × 650 pixel crop. Mark every confidentiality band, the core-number ruler and the fine crack tip on the same original photograph. No band pixel leaves the workbench and the report never calls the crop a full original.</p>
+    <div class="form-columns">${selectField("Photograph","release_photo",state.tile.photos.map(item=>option(item.id,item.role_label+" · "+item.name,state.release.photo_id)).join(""))}</div>
+    <div class="actions" id="release-tools">${RELEASE_TOOLS.map(([key,label,color])=>btn(label,"release-tool",state.release.tool===key?"tiny primary":"tiny secondary",null,`data-value="${key}"`)).join("")}
+      ${btn("Undo last mark","release-undo","tiny ghost")}${btn("Clear marks","release-clear","tiny ghost")}</div>
+    <div class="stage"><div class="capture-drawing" id="release-stage">${img(photo().preview_url,"Photograph to mark for external release")}
+      <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="release-overlay"></svg></div></div>
+    <p class="soft" id="release-hint">Choose a tool, then drag a rectangle for a band or the ruler, or click once to place the crack tip.</p>
+    <div id="release-plan"></div>
+    <h4>Measurements pinned as readings</h4><div class="divider-list scroll-list">${readingRows}</div>
+    ${textField("Evidence title","title",state.tile.name+" crop release",'required maxlength="115"')}
+    ${areaField("Packet notes","notes","",2400)}`,
+    "Build crop packet",async data=>{
+      const marks=releaseMarks();
+      const result_ids=data.getAll("result_id");
+      if (!result_ids.length) throw Error("Select at least one measurement reading.");
+      const made=await api(tileUrl()+"/release",{method:"POST",body:{
+        photo_id:marks.photo_id,bands:marks.bands,ruler:marks.ruler,crack_tip:marks.crack_tip,
+        result_ids,title:data.get("title"),notes:data.get("notes"),tags:[],
+      }});
+      await gatherTile();
+      state.tab="evidence";
+      commitModal();
+      toast(`Crop packet pinned: 900 × 650 at (${made.crop.left}, ${made.crop.top}).`);
+      render();
+    },true);
+  drawRelease();
+}
+
+function drawRelease() {
+  const rel=state.release; if (!rel) return;
+  const photo=state.tile.photos.find(item=>item.id===rel.photo_id);
+  const stage=q("#release-stage");
+  if (!stage) return;
+  stage.querySelector("img").src=photo.preview_url;
+  const enriched={...rel, photo_width:photo.width, photo_height:photo.height};
+  stage.querySelector("svg").outerHTML=releaseSvg(enriched, rel.geometry);
+  const plan=q("#release-plan");
+  if (rel.error) { plan.innerHTML=`<p class="notice warn">${e(rel.error)}</p>`; return; }
+  if (rel.geometry) {
+    const g=rel.geometry;
+    plan.innerHTML=`<div class="notice"><strong>Sendable crop window:</strong> upper-left pixel (${g.left}, ${g.top}), size ${g.width} × ${g.height}.<br>
+      Ruler: ${g.ruler_fully_retained?"<strong>fully retained</strong>":n(g.ruler_retained_percent)+"% of marked ruler kept"} ·
+      crack tip at crop (${n(g.crack_tip_crop_xy[0],1)}, ${n(g.crack_tip_crop_xy[1],1)}) with ${n(g.crack_tip_margin_px,1)} px edge clearance ·
+      ${g.bands_excluded} band(s) excluded, zero band pixels exported.</div>`;
+  } else {
+    plan.innerHTML=`<p class="soft">Add at least one confidentiality band, one ruler rectangle and one crack tip to calculate the crop window.</p>`;
+  }
+}
+
+async function updateReleasePlan() {
+  const rel=state.release;
+  if (!rel.bands.length || !rel.ruler || !rel.crack_tip) { rel.geometry=null; rel.error=""; drawRelease(); return; }
+  try {
+    const res=await api(tileUrl()+"/release/preview",{method:"POST",body:{
+      photo_id:rel.photo_id,bands:rel.bands,ruler:rel.ruler,crack_tip:rel.crack_tip,
+    }});
+    rel.geometry=res.geometry; rel.error="";
+  } catch (err) { rel.geometry=null; rel.error=err.message; }
+  drawRelease();
+}
+
+function releasePoint(event) {
+  const stage=q("#release-stage");
+  const rect=stage.getBoundingClientRect();
+  return [
+    Number(Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width)).toFixed(6)),
+    Number(Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height)).toFixed(6)),
+  ];
+}
+
+function releaseUndo() {
+  const rel=state.release;
+  if (rel.tool==="tip") rel.crack_tip=null;
+  else if (rel.tool==="ruler") rel.ruler=null;
+  else if (rel.bands.length) rel.bands.pop();
+  void updateReleasePlan();
 }
 
 function studyOptions(kind) {
@@ -740,6 +891,13 @@ async function doAction(name,target) {
       render();
     },
     pin:pinForm,
+    "release-add":releaseForm,
+    "release-tool":()=>{state.release.tool=value;
+      q("#release-tools").querySelectorAll("[data-do=release-tool]").forEach(button=>{
+        button.className="button tiny "+(button.dataset.value===value?"primary":"secondary");
+      });},
+    "release-undo":releaseUndo,
+    "release-clear":()=>{state.release.bands=[];state.release.ruler=null;state.release.crack_tip=null;void updateReleasePlan();},
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
@@ -770,6 +928,12 @@ async function runAction(target) {
 document.addEventListener("click",event=>{
   const target=event.target.closest("[data-do]");
   if (target) {void runAction(target);return;}
+  const release=event.target.closest("#release-stage");
+  if (release && state.release && state.release.tool==="tip" && !event.detail.ignore) {
+    state.release.crack_tip=releasePoint(event);
+    void updateReleasePlan();
+    return;
+  }
   const drawing=event.target.closest("#draw-stage");
   if (drawing && drawPoints.length<drawLimit) {
     const rect=drawing.getBoundingClientRect();
@@ -778,6 +942,44 @@ document.addEventListener("click",event=>{
     drawPoints.push([Number(u.toFixed(6)),Number(v.toFixed(6))]);
     drawUpdate();
   }
+});
+
+document.addEventListener("pointerdown",event=>{
+  const stage=event.target.closest("#release-stage");
+  if (!stage || !state.release || state.release.tool==="tip") return;
+  state.release.drag={start:releasePoint(event)};
+  stage.setPointerCapture?.(event.pointerId);
+});
+
+document.addEventListener("pointermove",event=>{
+  const stage=event.target.closest("#release-stage");
+  const drag=state.release?.drag;
+  if (!stage || !drag) return;
+  drag.end=releasePoint(event);
+  const provisional={left:Math.min(drag.start[0],drag.end[0]),top:Math.min(drag.start[1],drag.end[1]),
+    right:Math.max(drag.start[0],drag.end[0]),bottom:Math.max(drag.start[1],drag.end[1])};
+  if (provisional.right-provisional.left<0.005 || provisional.bottom-provisional.top<0.005) return;
+  const rel=state.release;
+  const previewMarks={...rel, ruler:rel.tool==="ruler"?provisional:rel.ruler,
+    bands:rel.tool==="band"?[...rel.bands,provisional]:rel.bands,
+    photo_width:state.tile.photos.find(p=>p.id===rel.photo_id).width,
+    photo_height:state.tile.photos.find(p=>p.id===rel.photo_id).height};
+  q("#release-overlay").outerHTML=releaseSvg(previewMarks, rel.geometry);
+});
+
+document.addEventListener("pointerup",event=>{
+  const stage=event.target.closest("#release-stage");
+  const drag=state.release?.drag;
+  if (!stage || !drag) return;
+  state.release.drag=null;
+  const end=releasePoint(event);
+  const rect={left:Math.min(drag.start[0],end[0]),top:Math.min(drag.start[1],end[1]),
+    right:Math.max(drag.start[0],end[0]),bottom:Math.max(drag.start[1],end[1])};
+  if (rect.right-rect.left<0.005 || rect.bottom-rect.top<0.005) { drawRelease(); return; }
+  const rel=state.release;
+  if (rel.tool==="band") rel.bands.push(rect);
+  else if (rel.tool==="ruler") rel.ruler=rect;
+  void updateReleasePlan();
 });
 
 document.addEventListener("submit",async event=>{
@@ -817,6 +1019,36 @@ document.addEventListener("change",event=>{
     q("#field-kind")?.focus();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
+  if (event.target.id==="field-release_photo" && state.release) {
+    state.release.photo_id=event.target.value;
+    state.release.bands=[];state.release.ruler=null;state.release.crack_tip=null;state.release.geometry=null;state.release.error="";
+    drawRelease();
+  }
+});
+
+document.addEventListener("submit",async event=>{
+  if (event.target.id!=="compare-form") return;
+  event.preventDefault();
+  const packet=state.receivedActive;
+  const form=event.target;
+  const data=new FormData(form);
+  const button=form.querySelector("button");
+  button.disabled=true;
+  try {
+    const result=await api(`/api/received/${packet.id}/compare-original`,{method:"POST",body:data});
+    const ok=result.verdict==="match";
+    q("#compare-result").innerHTML=`<div class="notice ${ok?"":"warn"}">
+      <strong>${ok?"Original confirmed":"Mismatch — do not treat as confirmed"}</strong><br>
+      Original digest match: ${result.original_digest_match?"yes":"no"} · working image digest: ${result.working_digest_match?"yes":"no"}<br>
+      Pixel comparison: ${result.pixel_match?"identical":n(result.mismatched_pixels,0)+" of "+n(result.crop_pixels,0)+" pixels differ ("+n(result.mismatched_percent,4)+"%)"}<br>
+      Band breaches on re-cut: ${result.band_breaches}<br><span class="soft">${e(result.note)}</span></div>`;
+    if (ok) toast("Crop matches the retained original.");
+    else toast("Original comparison failed.",true);
+  } catch(err) {
+    q("#compare-result").innerHTML=`<p class="notice warn">${e(err.message)}</p>`;
+  } finally {
+    button.disabled=false;
+  }
 });
 
 dialog.addEventListener("close",()=>{

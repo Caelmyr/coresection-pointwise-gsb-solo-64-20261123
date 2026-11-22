@@ -321,5 +321,18 @@ def summarize_result(record):
 
 
 def summarize_evidence(record):
-    keys = ("title", "notes", "id", "tags", "created_at", "tile_id", "tile_name", "tile_version_at_pin", "view")
-    return {**{key: record[key] for key in keys}, "count": len(record["measurements"]), "sheet_count": len(record["sheets"])}
+    keys = ("title", "notes", "id", "tags", "created_at", "tile_id", "tile_name", "tile_version_at_pin")
+    summary = {**{key: record[key] for key in keys}, "packet_kind": record.get("packet_kind", "full_report")}
+    if summary["packet_kind"] == "crop_release":
+        summary["count"] = len(record["readings"])
+        summary["sheet_count"] = 0
+        summary["crop"] = {
+            key: record["crop"][key]
+            for key in ("left", "top", "width", "height", "ruler_retained_percent",
+                        "ruler_fully_retained", "crack_tip_crop_xy", "crack_tip_margin_px",
+                        "bands_excluded", "band_pixels_in_crop")
+        }
+        return summary
+    keys = (*keys, "view")
+    return {**{key: record[key] for key in keys}, "packet_kind": "full_report",
+            "count": len(record["measurements"]), "sheet_count": len(record["sheets"])}

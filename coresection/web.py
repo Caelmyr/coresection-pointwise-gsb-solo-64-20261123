@@ -23,6 +23,14 @@ from .inspection import side_preview, viewing_pair
 from .art import base_rgba
 from .intake import MAX_ARCHIVE_BYTES, inspect_packet
 from .metrology import create_metrology
+from .release import (
+    compare_original,
+    create_release,
+    plan_crop,
+    release_html,
+    release_marks,
+    release_zip,
+)
 from .model import (
     ANALYSIS_LABELS,
     MAX_UPLOAD,
@@ -328,18 +336,65 @@ def register_artifacts(api, store, heavy):
             raise MissingError("Evidence sheet not found.")
         return png_blob(store, record["sheets"][number - 1])
 
-    @api.get("/evidence/<packet_id>/inspection.html")
-    def packet_html(packet_id):
-        entry = store.evidence(packet_id)
-        return binary_response(specimen_html(store, entry), "text/html")
-
     @api.get("/evidence/<packet_id>/archive.zip")
     def packet_zip(packet_id):
         entry = store.evidence(packet_id)
         with heavy:
-            binary = evidence_zip(store, entry)
+            if entry.get("packet_kind") == "crop_release":
+                binary = release_zip(store, entry)
+            else:
+                binary = evidence_zip(store, entry)
         name = filename_stem(entry["title"], "inspection")
         return binary_response(binary, "application/zip", name + ".zip")
+
+    @api.get("/evidence/<packet_id>/inspection.html")
+    def packet_report(packet_id):
+        entry = store.evidence(packet_id)
+        if entry.get("packet_kind") == "crop_release":
+            return binary_response(release_html(entry), "text/html")
+        return binary_response(specimen_html(store, entry), "text/html")
+
+    @api.get("/evidence/<packet_id>/<path:member>")
+    def packet_member(packet_id, member):
+        entry = store.evidence(packet_id)
+        if entry.get("packet_kind") != "crop_release":
+            raise MissingError("Packet member not found.")
+        reading = next((item for item in entry["readings"] if member in (item["member"], item["csv_member"])), None)
+        if reading is not None:
+            if member == reading["member"]:
+                return binary_response(artifact_json(reading["descriptor"]), "application/json")
+            from .release import readings_csv
+            return binary_response(readings_csv([reading["descriptor"]]), "text/csv")
+        digest = None
+        if member == entry["crop"]["member"]:
+            digest = entry["crop"]["crop_digest"]
+        elif member == entry["crop"]["thumbnail_member"]:
+            digest = entry["crop"]["thumbnail_digest"]
+        if digest is None:
+            raise MissingError("Packet member not found.")
+        return png_blob(store, digest)
+
+    @api.post("/specimens/<specimen_id>/release/preview")
+    def release_preview(specimen_id):
+        data = json_request()
+        marks = release_marks(data)
+        tile = store.tile(specimen_id)
+        photo = match_slot(tile["photos"], marks["photo_id"], "photo")
+        with heavy:
+            geometry = plan_crop(photo, marks)
+        return jsonify({
+            "photo_id": photo["id"],
+            "photo_width": photo["width"],
+            "photo_height": photo["height"],
+            "marks": marks,
+            "geometry": geometry,
+        })
+
+    @api.post("/specimens/<specimen_id>/release")
+    def release_save(specimen_id):
+        with heavy:
+            entry = create_release(store, specimen_id, json_request())
+        return jsonify(summarize_evidence(entry)), 201
 
     @api.get("/studies/measurements")
     def study_available():
@@ -405,6 +460,28 @@ def register_desks(api, store, heavy):
         measurement = match_slot(packet["measurements"], identity(entry_id, "Measurement ID"), "measurement")
         image = enumeration(layer, ("source", "overlay", "paired"), "Measurement layer")
         return png_blob(store, measurement["pictures"].get(image))
+
+    @api.get("/received/<received_id>/crop/<which>")
+    def received_crop(received_id, which):
+        packet = store.received(received_id)
+        if packet.get("packet_kind") != "crop_release":
+            raise MissingError("This received packet has no evidence crop.")
+        chosen = enumeration(which, ("image", "thumbnail"), "Crop view")
+        digest = packet["crop"]["image"] if chosen == "image" else packet["crop"]["thumbnail"]
+        return png_blob(store, digest)
+
+    @api.post("/received/<received_id>/compare-original")
+    def received_compare(received_id):
+        packet = store.received(received_id)
+        incoming = request.files.get("original")
+        if incoming is None:
+            raise InputError("Choose the retained original capture from the same photo session.")
+        raw = incoming.stream.read(MAX_UPLOAD + 1)
+        if len(raw) > MAX_UPLOAD:
+            raise InputError("Upload a photo of no more than 24 MiB.")
+        with heavy:
+            verdict = compare_original(store, packet, raw)
+        return jsonify(verdict)
 
     @api.get("/specimens/<specimen_id>/metrology")
     def geometry_records(specimen_id):
