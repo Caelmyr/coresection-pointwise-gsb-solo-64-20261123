@@ -7,6 +7,14 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
+from .baffle import (
+    build_plan,
+    clear_verification,
+    public_plan,
+    record_verification,
+    summarize_plan,
+    verification_hints,
+)
 from .demo import load_training, preview_photo
 from .evidence import (
     artifact_json,
@@ -427,6 +435,54 @@ def register_desks(api, store, heavy):
         return binary_response(artifact_json(record), "application/json", name + ".json")
 
 
+def register_baffle(api, store, heavy):
+    @api.get("/specimens/<specimen_id>/baffle-plans")
+    def baffle_list(specimen_id):
+        items = [summarize_plan(item) for item in store.list_baffle_plans(specimen_id)]
+        for item in items:
+            item["overlay_url"] = f"/api/baffle-plans/{item['id']}/image/plan_overlay"
+        return jsonify({"items": items})
+
+    @api.post("/specimens/<specimen_id>/baffle-plans")
+    def baffle_create(specimen_id):
+        with heavy:
+            plan = build_plan(store, specimen_id, json_request())
+        return jsonify(public_plan(plan)), 201
+
+    @api.get("/baffle-plans/<plan_id>")
+    def baffle_show(plan_id):
+        return jsonify(public_plan(store.baffle_plan(plan_id)))
+
+    @api.get("/baffle-plans/<plan_id>/image/<layer>")
+    def baffle_image(plan_id, layer):
+        plan = store.baffle_plan(plan_id)
+        chosen = enumeration(layer, ("plan_overlay", "verification_overlay"), "Baffle plan image")
+        digest = plan["pictures"].get(chosen)
+        if digest is None:
+            raise MissingError("No image exists for this layer yet.")
+        return png_blob(store, digest)
+
+    @api.post("/baffle-plans/<plan_id>/hints")
+    def baffle_hints(plan_id):
+        plan = store.baffle_plan(plan_id)
+        data = json_request()
+        photo_id = identity(data.get("photo_id"), "Follow-up photo ID")
+        with heavy:
+            return jsonify(verification_hints(store, plan, photo_id))
+
+    @api.put("/baffle-plans/<plan_id>/verification")
+    def baffle_verify(plan_id):
+        with heavy:
+            plan = record_verification(store, plan_id, json_request())
+        return jsonify(public_plan(plan))
+
+    @api.delete("/baffle-plans/<plan_id>/verification")
+    def baffle_verify_clear(plan_id):
+        with heavy:
+            plan = clear_verification(store, plan_id, json_request())
+        return jsonify(public_plan(plan))
+
+
 def register_training(api, store, heavy):
     @api.get("/training/hero.png")
     def synthetic_thumbnail():
@@ -507,5 +563,6 @@ def create_app(data_dir=None):
     register_measurements(api, store, heavy)
     register_artifacts(api, store, heavy)
     register_desks(api, store, heavy)
+    register_baffle(api, store, heavy)
     app.register_blueprint(api)
     return app

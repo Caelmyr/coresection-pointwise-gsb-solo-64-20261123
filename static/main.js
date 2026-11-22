@@ -1,7 +1,8 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
+import {planDetail,planForm,planListCard,planClick,verificationPanel} from "./baffle.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",plans:[],planActive:null,planLayer:"plan_overlay",planHints:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -10,7 +11,7 @@ const nav=[
   ["received","Received evidence","archive"],
 ];
 const tabs=[
-  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
+  ["captures","Captures","camera"],["regions","Sampling regions","frame"],["measure","Measure","measure"],["plans","Baffle plans","frame"],["geometry","Geometry","frame"],["evidence","Evidence","archive"],
 ];
 const tileUrl=()=>`/api/specimens/${state.tile.id}`;
 const tileData=extra=>({version:state.tile.version,...extra});
@@ -74,6 +75,8 @@ function regions(purpose,includeNone=true) {
   const choices=state.tile.regions.filter(item=>purpose?item.purpose===purpose:item.purpose!=="ignore");
   return (includeNone?option("","Entire plane",""):"")+choices.map(item=>option(item.id,item.name)).join("");
 }
+
+state.regionChoices=function regionChoices() { return regions(); };
 
 function imagesForCapture() {
   const photo=currentPhoto();
@@ -208,6 +211,20 @@ function receivedPage() {
     <div class="grid-detail">${view}<section class="card"><h3>Received packets</h3><div class="divider-list">${items.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(date(item.imported_at))}</small></div>${btn("Open","received-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No received packets.</p>"}</div></section></div>`;
 }
 
+function plansPage() {
+  const detail=state.planActive
+    ? `<div class="stack">${planDetail(state,state.planActive,state.planLayer,state.planHints)}
+        ${verificationPanel(state,state.planActive,state.planHints)}</div>`
+    : empty("Open a saved plan or build a new single-baffle sealing plan.");
+  return `<div class="grid-detail">${detail}
+    <div class="stack">${planListCard(state,state.plans)}
+    <section class="card"><h3>How planning works</h3><p class="soft">The plan reuses the Fine-line
+      network trace. Green traces still reach the injection point with the chosen baffle, red traces are
+      visibly cut, and ochre runs under the baffle disk so the surface cannot decide them. After the
+      experiment, align the tracer photo as a new capture and record each marker separately; unphotographed
+      markers stay blank.</p></section></div></div>`;
+}
+
 function tilePage() {
   const tile=state.tile;
   const descriptors=[tile.glaze,tile.body,tile.firing,tile.width_mm&&tile.height_mm?`${tile.width_mm} × ${tile.height_mm} mm`:null].filter(Boolean);
@@ -215,7 +232,7 @@ function tilePage() {
   <p>${e(descriptors.join(" · ") || "Registered core section")}</p></div><div class="actions">${btn("Edit specimen","tile-edit","secondary","edit")}
   ${btn("Approve reference","reference-add","secondary","book")}</div></header>
   <nav class="tabs" aria-label="Specimen tools">${tabs.map(([key,label,glyph])=>`<button type="button" class="tab ${state.tab===key?"active":""}" data-do="tile-tab" data-value="${key}">${icon(glyph)}${e(label)}</button>`).join("")}</nav>
-  ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
+  ${{captures,regions:regionPage,measure:measurements,plans:plansPage,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
 function libraryPage() {
@@ -250,8 +267,8 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,plans]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/baffle-plans"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
@@ -259,6 +276,7 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.plans=plans.items;
 }
 
 async function route() {
@@ -271,6 +289,7 @@ async function route() {
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
       state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.planActive=null;state.planLayer="plan_overlay";state.planHints=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -301,7 +320,7 @@ function modal(title, contents, submitLabel, onSubmit, wide=false, extra="") {
   qa("[data-blob]",dialog).forEach(el=>URL.revokeObjectURL(el.dataset.blob));
   dialog.className=wide?"wide":"";
   dialog.innerHTML=`<div class="dialog-head"><h2>${e(title)}</h2>${btn("Close","close","tiny ghost","x")}</div>
-    <form id="dialog-form" class="form-stack"><div class="dialog-error" role="alert"></div>${contents}
+    <form id="dialog-form" class="form-stack" data-plan-form=""><div class="dialog-error" role="alert"></div>${contents}
       ${submitLabel?`<div class="actions dialog-controls">${extra}<button type="submit" class="button primary">${e(submitLabel)}</button></div>`:""}</form>`;
   currentForm=onSubmit;
   if (!dialog.open) dialog.showModal();
@@ -740,6 +759,57 @@ async function doAction(name,target) {
       render();
     },
     pin:pinForm,
+    "plan-new":()=>planForm(state,async saved=>{
+      await gatherTile();
+      state.planActive=await api("/api/baffle-plans/"+saved.id);
+      state.planLayer="plan_overlay";
+      state.planHints=null;
+      state.tab="plans";
+      toast("Baffle plan saved.");
+      render();
+    }),
+    "plan-open":async ()=>{
+      state.planActive=await api("/api/baffle-plans/"+id);
+      state.planLayer=state.planActive.pictures.verification_overlay&&state.planLayer==="verification_overlay"
+        ? "verification_overlay":"plan_overlay";
+      state.planHints=null;
+      render();
+    },
+    "plan-layer":()=>{state.planLayer=value;render();},
+    "plan-hints":async ()=>{
+      const photoId=q("#field-verify_photo").value;
+      state.planHints=await api(`/api/baffle-plans/${state.planActive.id}/hints`,{method:"POST",body:{photo_id:photoId}});
+      toast("Tracer-color hint computed; confirm each state from the photo.");
+      render();
+    },
+    "plan-save-verify":async ()=>{
+      const plan=state.planActive;
+      const photoId=q("#field-verify_photo").value;
+      const entries=plan.expected_rows.map(row=>{
+        const stateValue=q(`[name=obs-${row.key}]`).value;
+        const notes=q(`[name=note-${row.key}]`).value;
+        return {key:row.key,state:stateValue,notes};
+      });
+      state.planActive=await api(`/api/baffle-plans/${plan.id}/verification`,{method:"PUT",body:{
+        version:plan.version,photo_id:photoId,note:q("#field-verify_note").value,entries,
+      }});
+      state.planLayer=state.planActive.pictures.verification_overlay?"verification_overlay":"plan_overlay";
+      await gatherTile();
+      toast("Verification recorded; markers left blank hold no evidence.");
+      render();
+    },
+    "plan-clear-verify":()=>modal("Clear recorded observations?",
+      '<p>The pre-experiment expectations stay intact. Only observed evidence and the verification overlay are removed.</p>',
+      "Clear observations",async ()=>{
+        state.planActive=await api(`/api/baffle-plans/${state.planActive.id}/verification`,{
+          method:"DELETE",body:{version:state.planActive.version},
+        });
+        state.planLayer="plan_overlay";
+        state.planHints=null;
+        await gatherTile();
+        toast("Observations cleared.");
+        render();
+      }),
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
@@ -770,6 +840,14 @@ async function runAction(target) {
 document.addEventListener("click",event=>{
   const target=event.target.closest("[data-do]");
   if (target) {void runAction(target);return;}
+  const planStage=event.target.closest("#plan-draw-stage");
+  if (planStage) {
+    const rect=planStage.getBoundingClientRect();
+    const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+    const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
+    planClick(u,v);
+    return;
+  }
   const drawing=event.target.closest("#draw-stage");
   if (drawing && drawPoints.length<drawLimit) {
     const rect=drawing.getBoundingClientRect();
@@ -783,6 +861,7 @@ document.addEventListener("click",event=>{
 document.addEventListener("submit",async event=>{
   const form=event.target;
   if (!["measurement-form","dialog-form"].includes(form.id)) return;
+  if (form.dataset.planForm === "1") return;
   event.preventDefault();
   if (working) return;
   working++;

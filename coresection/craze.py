@@ -216,8 +216,9 @@ def craze_overlay(frame, network, footprint, nodes):
     return Image.fromarray(np.dstack((values, alpha)))
 
 
-def measure_craze(frame, linear, area, options):
-    source = luminance(linear)
+def trace_centerlines(frame, area, options):
+    """Run the fine-line pipeline and return every raster layer used downstream."""
+    source = luminance(frame.linear)
     candidate = area & frame.valid & ~frame.clipped
     if source.size > PIXEL_LIMIT:
         raise InputError("Crackle tracing supports registered planes up to 3.1 megapixels.")
@@ -228,6 +229,10 @@ def measure_craze(frame, linear, area, options):
     if np.count_nonzero(support) < 100:
         raise InputError("Choose a larger area with contiguous, unclipped image support.")
     thin, binary, thresholds = threshold_centerline(filtered, fine, coarse, support, options)
+    return thin, binary, support, thresholds
+
+
+def craze_metrics(frame, thin, support, thresholds, options):
     degrees = degree_map(thin)
     length, edges = effective_edge_length(thin, frame.scale)
     nodes, _ = branch_nodes(degrees, thin)
@@ -238,7 +243,7 @@ def measure_craze(frame, linear, area, options):
         density = length / area_mm
     else:
         density = length / supported
-    metrics = {
+    return {
         "network_length": round(length, 5),
         "length_unit": "mm" if frame.scale else "px",
         "density": round(float(density), 6),
@@ -253,4 +258,11 @@ def measure_craze(frame, linear, area, options):
         "thresholds": thresholds,
         "note": "An image trace of thin dark lines. Verify finish marks and scratches against the source photo.",
     }
+
+
+def measure_craze(frame, linear, area, options):
+    thin, binary, support, thresholds = trace_centerlines(frame, area, options)
+    metrics = craze_metrics(frame, thin, support, thresholds, options)
+    degrees = degree_map(thin)
+    nodes, _ = branch_nodes(degrees, thin)
     return metrics, craze_overlay(frame, thin, binary, nodes)

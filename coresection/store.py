@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS baffle_plans (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS baffle_plans_tile ON baffle_plans(tile_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -474,3 +481,41 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def save_baffle_plan(self, fields):
+        record = {**fields, "id": make_id(), "created_at": timestamp()}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO baffle_plans(id,tile_id,document,created_at) VALUES (?,?,?,?)",
+                (record["id"], record["tile_id"], document(record), record["created_at"]),
+            )
+            event(conn, record["tile_id"], "baffle", f"Saved tracer baffle plan: {record['title']}")
+        return record
+
+    def _baffle_plan(self, conn, identifier):
+        plan_id = identity(identifier, "Baffle plan ID")
+        row = conn.execute("SELECT document FROM baffle_plans WHERE id=?", (plan_id,)).fetchone()
+        return artifact_row(row, "Baffle plan")
+
+    def baffle_plan(self, identifier):
+        with self.connect() as conn:
+            return self._baffle_plan(conn, identifier)
+
+    def list_baffle_plans(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, chosen)
+            rows = conn.execute(
+                "SELECT document FROM baffle_plans WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
+            ).fetchall()
+            return [json.loads(row["document"]) for row in rows]
+
+    def update_baffle_plan(self, identifier, transform, message):
+        plan_id = identity(identifier, "Baffle plan ID")
+        with self.transaction(write=True) as conn:
+            record = self._baffle_plan(conn, plan_id)
+            transform(record)
+            record["version"] += 1
+            conn.execute("UPDATE baffle_plans SET document=? WHERE id=?", (document(record), record["id"]))
+            event(conn, record["tile_id"], "baffle", message)
+            return record
