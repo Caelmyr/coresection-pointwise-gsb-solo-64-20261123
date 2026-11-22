@@ -196,6 +196,7 @@ class Store:
             "plane": fields.get("plane"),
             "registrations": fields.get("registrations", {}),
             "calibration": fields.get("calibration"),
+            "scale": fields.get("scale") or {"checks": [], "candidates": [], "decision": None},
             "synthetic": fields.get("synthetic", False),
         }
         conn.execute(
@@ -450,14 +451,14 @@ class Store:
             rows = conn.execute("SELECT document FROM received ORDER BY rowid DESC LIMIT 60").fetchall()
             return [json.loads(row["document"]) for row in rows]
 
-    def save_metrology(self, fields):
+    def save_metrology(self, fields, message=None):
         record = {**fields, "id": make_id(), "created_at": timestamp()}
         with self.transaction(write=True) as conn:
             conn.execute(
                 "INSERT INTO metrology(id,tile_id,document,created_at) VALUES (?,?,?,?)",
                 (record["id"], record["tile_id"], document(record), record["created_at"]),
             )
-            event(conn, record["tile_id"], "geometry", f"Measured area in the tile plane: {record['title']}")
+            event(conn, record["tile_id"], "geometry", message or f"Measured area in the tile plane: {record['title']}")
         return record
 
     def metrology(self, identifier):

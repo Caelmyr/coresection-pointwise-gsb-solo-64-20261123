@@ -166,6 +166,45 @@ function evidencePage() {
     <section class="card"><h3>Specimen activity</h3><div class="divider-list scroll-list">${(state.activity||[]).map(row=>`<div class="row"><div class="grow"><strong>${e(row.message)}</strong><br><small>${e(date(row.recorded_at))}</small></div></div>`).join("")}</div></section></div>`;
 }
 
+function comparisonBlock(record) {
+  const cmp=record.comparison;
+  const sum=cmp.summary;
+  const vis={both:"Both planes",old_only:"Saved plane only",new_only:"New plane only",partial:"Partial",neither:"Neither"};
+  const delta=sum.total_delta==null?"—":`${sum.total_delta>0?"+":""}${n(sum.total_delta)} ${cmp.new_scale.units} (${sum.total_delta_percent>0?"+":""}${n(sum.total_delta_percent)}%)`;
+  return `<h3>Scale cross-check · ${e(cmp.new_scale.name)}</h3>
+    <p class="soft">Same line on the original photo, re-measured from saved reading ${e(cmp.derived_from)}. The earlier reading is unchanged.</p>
+    <div class="metrics">${stat("Saved total",`${n(sum.previous_total)} ${cmp.previous_units}`)}${stat("Re-measured total",`${n(sum.new_total)} ${cmp.new_scale.units}`)}
+    ${stat("Total Δ",delta)}${stat("Segments seen in both",`${sum.both} of ${cmp.segments.length}`)}</div>
+    ${table(["Segment","Saved","Re-measured","Δ","Plane coverage (saved / new)"],cmp.segments.map(row=>[
+      row.index,`${n(row.previous_length)} ${cmp.previous_units}`,`${n(row.new_length)} ${cmp.new_scale.units}`,
+      row.delta==null?"—":`${row.delta>0?"+":""}${n(row.delta)}`,
+      `${vis[row.visibility]||row.visibility} · ${n(row.old_plane_percent,0)}% / ${n(row.new_plane_percent,0)}%`,
+    ]))}
+    ${(cmp.notes||[]).map(note=>`<p class="notice">${e(note)}</p>`).join("")}`;
+}
+
+function scaleCard() {
+  const tile=state.tile;
+  const scale=tile.scale||{checks:[],candidates:[],decision:null};
+  const decision=scale.decision;
+  const checkRows=scale.checks.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.name)}</strong><small>${n(item.known_mm)} mm taped</small></div>
+    ${btn("Edit","check-edit","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("");
+  const candidateRows=scale.candidates.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.name)}</strong><small>${n(item.width_mm)} × ${n(item.height_mm)} mm plate</small></div>
+    ${btn("Remove","candidate-remove","tiny danger",null,`data-id="${item.id}"`)}</div>`).join("");
+  const decisionView=decision?`<p class="soft">Report scale: <strong>${e(decision.name)}</strong> · worst |Δ| ${n(decision.max_abs_mm)} mm · ${e(date(decision.decided_at))}</p>
+    <figure class="stage">${img(`/api/specimens/${tile.id}/scale/overlay.png?v=${tile.version}`,"Adopted scale evidence on the original photo")}</figure>
+    ${table(["Taped distance","Known","Read","Δ mm"],decision.results.map(row=>{
+      const check=(decision.checks||[]).find(item=>item.id===row.check_id)||{};
+      return [check.name||"—",check.known_mm==null?"—":n(check.known_mm),row.inside&&row.measured_mm!=null?n(row.measured_mm):"not covered",row.residual_mm==null?"—":(row.residual_mm>0?"+":"")+n(row.residual_mm)];
+    }))}`:"";
+  return `<section class="card"><div class="title-row"><h3>Plane scale evidence</h3>${decision?badge("Scale adopted","ready"):""}</div>
+    ${decision?decisionView:"<p class='soft'>Mark taped distances and a second plate on the original photo to justify one report scale.</p>"}
+    ${checkRows?`<div class="divider-list">${checkRows}</div>`:""}
+    ${candidateRows?`<div class="divider-list">${candidateRows}</div>`:""}
+    <div class="actions">${btn("Mark taped distance","check-add","secondary","measure")}${btn("Add plate candidate","candidate-add","secondary","frame")}${btn("Evaluate scales","scale-evaluate","primary","plot")}</div>
+  </section>`;
+}
+
 function geometryPage() {
   const record=state.metrologyActive;
   const results=state.metrology||[];
@@ -182,9 +221,10 @@ function geometryPage() {
       <figure class="stage">${img(base+"/overlay.png",record.title)}</figure>
       <div class="metrics">${stats.map(([name,value])=>stat(name,value)).join("")}</div>
       ${table(["Segment","Length","Heading"],stations.map(item=>[item.index,`${n(item.length)} ${item.units}`,n(item.clockwise_heading)+"°"]))}
-      <div class="actions">${link("Measurement JSON",base+"/data.json","secondary","download")}</div></section>`;
+      ${record.comparison?comparisonBlock(record):""}
+      <div class="actions">${link("Measurement JSON",base+"/data.json","secondary","download")}${record.mode==="trace"?btn("Re-measure under another scale","trace-rescale","secondary","compare"):""}</div></section>`;
   }
-  return `<div class="grid-detail">${report}<div class="stack"><section class="card"><h3>Measure a visible shape</h3>
+  return `<div class="grid-detail">${report}<div class="stack">${scaleCard()}<section class="card"><h3>Measure a visible shape</h3>
       <p class="soft">Trace along the image or measure visible support inside a saved sampling region.</p>
       <div class="actions">${btn("Trace a path","trace-add","primary","measure")}${btn("Measure region area","area-add","secondary","frame")}</div></section>
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
@@ -535,6 +575,78 @@ function geometryMeasurementForm(mode) {
   if (!area) prepareDrawing([],45);
 }
 
+function checkForm(check) {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base photo before marking a taped distance.");
+  modal(check?"Edit taped distance":"Mark taped distance",`
+    <div class="form-columns">${textField("Name","name",check?.name||"Scale check",'required maxlength="60"')}${numField("True length mm","known_mm",check?.known_mm,0.1,100000,0.1)}</div>
+    <p class="notice">Mark the two ends of a distance you taped on the rack, here on the original photo.</p>
+    ${drawing(base.preview_url,"Original photo for taped distance")}
+    <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Save distance",async data=>{
+      if (drawPoints.length!==2) throw Error("Mark the two ends of the taped distance.");
+      const fields={name:data.get("name"),known_mm:Number(data.get("known_mm")),a:drawPoints[0],b:drawPoints[1]};
+      await patchTile(check?"/scale/checks/"+check.id:"/scale/checks",check?"PUT":"POST",fields,"Taped distance saved.");
+    },true,check?btn("Remove distance","check-remove","danger",null,`data-id="${check.id}"`):"");
+  prepareDrawing(check?[check.a,check.b]:[],2);
+}
+
+function candidateForm() {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base photo before adding a plate candidate.");
+  const tile=state.tile;
+  modal("Add plate candidate",`
+    ${textField("Plate name","name","Second plate",'required maxlength="60"')}
+    <div class="form-columns">${numField("Plate width mm","width_mm",tile.width_mm,0.1,100000,0.1)}${numField("Plate height mm","height_mm",tile.height_mm,0.1,100000,0.1)}</div>
+    <p class="notice">Mark the plate's four corners clockwise on the original photo, beginning upper-left. The plate's size sets this candidate's scale.</p>
+    ${drawing(base.preview_url,"Original photo for plate corners")}
+    <div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}<span class="soft" id="draw-count"></span></div>`,
+    "Save candidate",async data=>{
+      if (drawPoints.length!==4) throw Error("Mark the four plate corners.");
+      await patchTile("/scale/candidates","POST",{
+        name:data.get("name"),width_mm:Number(data.get("width_mm"))||null,height_mm:Number(data.get("height_mm"))||null,corners:drawPoints,
+      },"Plate candidate saved.");
+    },true);
+  prepareDrawing([],4);
+}
+
+async function scaleEvaluateForm() {
+  if (!state.tile.plane) throw Error("Set a base photo and mark the survey plane first.");
+  const evaluation=await api(tileUrl()+"/scale/evaluate",{method:"POST",body:{}});
+  const rec=evaluation.recommendation;
+  const head=`<tr><th>Candidate</th><th>mm/px</th>${evaluation.checks.map(check=>`<th>${e(check.name)}<br><small>${n(check.known_mm)} mm taped</small></th>`).join("")}<th>Worst |Δ|</th><th></th></tr>`;
+  const body=evaluation.candidates.map(candidate=>{
+    const pick=rec&&rec.candidate_id===candidate.id;
+    return `<tr><td>${e(candidate.name)} ${pick?badge("evidence pick","ready"):""}</td>
+      <td>${candidate.mm_per_px?n(candidate.mm_per_px[0],4):"—"}</td>
+      ${candidate.results.map(row=>`<td>${row.inside&&row.measured_mm!=null?`${n(row.measured_mm)} mm<br><small>${row.residual_mm>0?"+":""}${n(row.residual_mm)} mm</small>`:"not covered"}</td>`).join("")}
+      <td>${candidate.max_abs_mm==null?"—":`${n(candidate.max_abs_mm)} mm`}</td>
+      <td>${candidate.evaluated_checks?btn("Adopt","scale-adopt","tiny "+(pick?"primary":"secondary"),null,`data-id="${candidate.id}"`):""}</td></tr>`;
+  }).join("");
+  modal("Scale evidence on the original photo",`
+    <p class="soft">${e(rec?rec.reason:"No candidate has usable taped-distance evidence yet.")}</p>
+    <div class="table-wrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <p class="soft">Each cell shows the length that plane reads on a taped distance, with the signed residual beneath. Adopting pins the decision, its residuals and the annotated original photo to the specimen.</p>`,
+    null,null,true);
+}
+
+function rescaleForm(record) {
+  const candidates=state.tile.scale?.candidates||[];
+  const options=option("plane",`Specimen plane · ${state.tile.width_mm||"?"} × ${state.tile.height_mm||"?"} mm`)+
+    candidates.map(item=>option(item.id,`${item.name} · ${item.width_mm} × ${item.height_mm} mm`)).join("");
+  modal("Re-measure under another scale",`
+    ${textField("Measurement title","title",`${record.title} · re-measured`,'required maxlength="90"')}
+    ${selectField("Target scale","candidate_id",options)}
+    <p class="notice">The saved reading stays unchanged. The same photo line is measured again under the chosen scale, and each segment's visibility is cross-checked in both planes.</p>`,
+    "Re-measure",async data=>{
+      state.metrologyActive=await api(`${tileUrl()}/metrology/${record.id}/remeasure`,{method:"POST",body:{title:data.get("title"),candidate_id:data.get("candidate_id")}});
+      await gatherTile();
+      commitModal();
+      toast("Re-measurement saved; the original reading is unchanged.");
+      render();
+    });
+}
+
 function importEvidence() {
   modal("Verify evidence ZIP",field("Evidence ZIP","packet",'<input id="field-packet" name="packet" type="file" accept="application/zip,.zip" required>')+
     '<p class="soft">Select a CoreSection inspection archive up to 24 MiB. The viewer checks the declared images against their embedded digests.</p>',
@@ -714,6 +826,28 @@ async function doAction(name,target) {
     "trace-add":()=>geometryMeasurementForm("trace"),
     "area-add":()=>geometryMeasurementForm("area"),
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
+    "check-add":()=>checkForm(),
+    "check-edit":()=>checkForm(state.tile.scale.checks.find(item=>item.id===id)),
+    "check-remove":()=>modal("Remove taped distance?",'<p>Scale decisions already pinned keep their snapshot of this distance.</p>',"Remove distance",async ()=>{
+      await patchTile("/scale/checks/"+id,"DELETE",{},"Taped distance removed.");
+    }),
+    "candidate-add":candidateForm,
+    "candidate-remove":()=>modal("Remove plate candidate?",'<p>Scale decisions already pinned keep their snapshot of this plate.</p>',"Remove candidate",async ()=>{
+      await patchTile("/scale/candidates/"+id,"DELETE",{},"Plate candidate removed.");
+    }),
+    "scale-evaluate":scaleEvaluateForm,
+    "scale-adopt":()=>{
+      const names={plane:"Specimen plane"};
+      for (const item of state.tile.scale?.candidates||[]) names[item.id]=item.name;
+      modal("Adopt this plane scale?",`
+        <p>Adopt <strong>${e(names[id]||"this candidate")}</strong> as the single plane scale for the shift report. The decision, its residuals and the annotated original photo are pinned to the specimen.</p>
+        ${areaField("Decision note","note","",240)}
+        ${id!=="plane"?checkField("Apply as the live specimen plane — resets live regions and registrations; the previous plane is kept as a candidate","apply_plane",false):""}`,
+        "Adopt scale",async data=>{
+          await patchTile("/scale/adopt","POST",{candidate_id:id,note:data.get("note"),apply_plane:data.has("apply_plane")},"Plane scale adopted for the report.");
+        });
+    },
+    "trace-rescale":()=>rescaleForm(state.metrologyActive),
     "receive-add":importEvidence,
     "received-open":()=>{state.receivedActive=state.received.find(item=>item.id===id);render();},
     "defect-note":()=>{

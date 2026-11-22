@@ -44,6 +44,15 @@ from .parameters import TOOLS
 from .quality import quality_manifest
 from .photos import png_bytes
 from .review import parse_reviews, review_selection, save_reviews
+from .scalecheck import (
+    add_scale_candidate,
+    add_scale_check,
+    adopt_scale,
+    evaluate_scales,
+    remeasure_trace,
+    remove_scale_candidate,
+    remove_scale_check,
+)
 from .store import Store
 from .study import create_study, public_metrics
 from .workspace import (
@@ -233,6 +242,42 @@ def register_specimens(api, store, heavy):
     def calibration_remove(specimen_id):
         return jsonify(present_tile(clear_calibration(store, specimen_id, json_request())))
 
+    @api.post("/specimens/<specimen_id>/scale/checks")
+    def scale_check_add(specimen_id):
+        return jsonify(present_tile(add_scale_check(store, specimen_id, json_request()))), 201
+
+    @api.put("/specimens/<specimen_id>/scale/checks/<check_id>")
+    def scale_check_change(specimen_id, check_id):
+        return jsonify(present_tile(add_scale_check(store, specimen_id, json_request(), check_id)))
+
+    @api.delete("/specimens/<specimen_id>/scale/checks/<check_id>")
+    def scale_check_remove(specimen_id, check_id):
+        return jsonify(present_tile(remove_scale_check(store, specimen_id, check_id, json_request())))
+
+    @api.post("/specimens/<specimen_id>/scale/candidates")
+    def scale_candidate_add(specimen_id):
+        return jsonify(present_tile(add_scale_candidate(store, specimen_id, json_request()))), 201
+
+    @api.delete("/specimens/<specimen_id>/scale/candidates/<candidate_id>")
+    def scale_candidate_remove(specimen_id, candidate_id):
+        return jsonify(present_tile(remove_scale_candidate(store, specimen_id, candidate_id, json_request())))
+
+    @api.post("/specimens/<specimen_id>/scale/evaluate")
+    def scale_evaluate(specimen_id):
+        return jsonify(evaluate_scales(store.tile(specimen_id)))
+
+    @api.post("/specimens/<specimen_id>/scale/adopt")
+    def scale_adopt(specimen_id):
+        with heavy:
+            tile = adopt_scale(store, specimen_id, json_request())
+        return jsonify(present_tile(tile))
+
+    @api.get("/specimens/<specimen_id>/scale/overlay.png")
+    def scale_overlay(specimen_id):
+        tile = store.tile(specimen_id)
+        decision = (tile.get("scale") or {}).get("decision") or {}
+        return png_blob(store, decision.get("overlay"))
+
 
 def register_measurements(api, store, heavy):
     @api.get("/specimens/<specimen_id>/results")
@@ -414,6 +459,12 @@ def register_desks(api, store, heavy):
     def geometry_make(specimen_id):
         with heavy:
             record = create_metrology(store, specimen_id, json_request())
+        return jsonify(record), 201
+
+    @api.post("/specimens/<specimen_id>/metrology/<record_id>/remeasure")
+    def geometry_remeasure(specimen_id, record_id):
+        with heavy:
+            record = remeasure_trace(store, specimen_id, record_id, json_request())
         return jsonify(record), 201
 
     @api.get("/metrology/<entry_id>/overlay.png")

@@ -50,12 +50,14 @@ def summarize_tile(tile):
             "id", "name", "batch", "body", "glaze", "firing", "width_mm", "height_mm", "version", "synthetic",
         )
     }
+    decision = (tile.get("scale") or {}).get("decision") or {}
     return {
         **summary,
         "photo_count": len(photos),
         "region_count": len(tile["regions"]),
         "cover_url": f"/api/specimens/{tile['id']}/photos/{cover['id']}/thumbnail" if cover else None,
         "registered_count": int(bool(base)) + len(tile["registrations"]),
+        "scale_adopted": decision.get("name"),
         "updated_at": tile["updated_at"],
     }
 
@@ -72,10 +74,16 @@ def present_tile(tile):
             data["registered_url"] = f"/api/specimens/{tile['id']}/viewer/{record['id']}?v={tile['version']}"
         photos.append(data)
     native = tile.get("plane")
+    scale = tile.get("scale") or {}
     return {
         **tile,
         "photos": photos,
         "canvas_size": native["size"] if native else None,
+        "scale": {
+            "checks": scale.get("checks") or [],
+            "candidates": scale.get("candidates") or [],
+            "decision": scale.get("decision"),
+        },
     }
 
 
@@ -146,6 +154,7 @@ def remove_photo(store, tile_id, capture_id, payload):
                 raise ConflictError("Removing the base photo requires resetting its current sampling plane.")
             tile["plane"] = None
             tile["calibration"] = None
+            tile["scale"] = None
             tile["registrations"] = {}
             tile["regions"] = []
         tile["registrations"].pop(capture_id, None)
@@ -193,10 +202,13 @@ def save_plane(store, tile_id, payload):
             return
         if (tile["registrations"] or tile["regions"]) and not reset:
             raise ConflictError("Changing the specimen plane requires confirming reset of its live regions and registrations.")
+        previous_photo = tile["plane"]["photo_id"] if tile["plane"] else None
         tile["plane"] = updated
         tile["registrations"].clear()
         tile["regions"].clear()
         tile["calibration"] = None
+        if previous_photo is not None and previous_photo != photo_id:
+            tile["scale"] = None
 
     return store.edit_tile(tile_id, expected, change, "plane", "Saved the photographed tile plane")
 
