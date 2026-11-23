@@ -36,7 +36,7 @@ from .texture import measure_texture
 from .weave import measure_weave
 
 
-ANALYZER_VERSION = 2
+ANALYZER_VERSION = 3
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -218,7 +218,7 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         metrics, image = measure_rim(frame, linear, area, options)
         return metrics, image, None
     if kind == "profile":
-        metrics = measure_profile(frame, linear, area, options)
+        metrics = measure_profile(frame, linear, area, options, tile)
         image = profile_overlay(frame, metrics["endpoints"], options["band_pixels"], linear)
         return metrics, image, None
     if kind == "reference":
@@ -304,6 +304,7 @@ def evaluate(store, tile_id, payload):
                 "capture": reference["source"],
                 "basis": reference["basis"],
             } if reference else None,
+            "assembly": (tile.get("assembly") or {}).get("assembly_id"),
         },
         "pictures": {
             "source": stored_preview(base_rgba(frame, linear), store.blobs),

@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS assemblies (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT,
+    document TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS assemblies_tile ON assemblies(tile_id);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -197,6 +204,8 @@ class Store:
             "registrations": fields.get("registrations", {}),
             "calibration": fields.get("calibration"),
             "synthetic": fields.get("synthetic", False),
+            "derived": fields.get("derived", False),
+            "assembly": fields.get("assembly"),
         }
         conn.execute(
             "INSERT INTO specimens(id, version, document, updated_at) VALUES (?, ?, ?, ?)",
@@ -474,3 +483,30 @@ class Store:
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]
+
+    def save_assembly(self, assembly):
+        now = timestamp()
+        assembly["updated_at"] = now
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO assemblies(id, tile_id, document, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET tile_id=excluded.tile_id, document=excluded.document, "
+                "updated_at=excluded.updated_at",
+                (assembly["id"], assembly["specimen_id"], document(assembly), now),
+            )
+            if assembly["specimen_id"]:
+                event(
+                    conn, assembly["specimen_id"], "assembly",
+                    f"Archived core segment assembly: {assembly['name']}",
+                )
+
+    def assembly(self, assembly_id):
+        chosen = identity(assembly_id, "Assembly ID")
+        with self.connect() as conn:
+            row = conn.execute("SELECT document FROM assemblies WHERE id=?", (chosen,)).fetchone()
+            return artifact_row(row, "Core assembly")
+
+    def list_assemblies(self):
+        with self.connect() as conn:
+            rows = conn.execute("SELECT document FROM assemblies ORDER BY rowid DESC LIMIT 100").fetchall()
+        return [json.loads(row["document"]) for row in rows]

@@ -42,8 +42,9 @@ def result_metrics_table(record):
     if kind == "profile":
         columns = (
             "position", "position_unit", "relative_position", "samples", "lightness", "a", "b", "intensity",
+            "depth_offset_mm", "depth_m", "source",
         )
-        rows = ([item[key] for key in columns] for item in metrics["rows"])
+        rows = ([item.get(key) for key in columns] for item in metrics["rows"])
     elif kind == "defects":
         columns = (
             "key", "type", "polarity", "area_pixels", "area_mm2", "normalized_center", "bounds", "peak_contrast",

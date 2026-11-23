@@ -2,11 +2,12 @@ import json
 import os
 from pathlib import Path
 from threading import BoundedSemaphore
-
 from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
+from .assembly import create_assembly, override_decision
+from .assembly_demo import load_assembly_demo
 from .demo import load_training, preview_photo
 from .evidence import (
     artifact_json,
@@ -439,6 +440,80 @@ def register_training(api, store, heavy):
         return jsonify({"items": [summarize_tile(tile) for tile in tiles], "created": created}), 201 if created else 200
 
 
+def assembly_summary(assembly):
+    return {
+        "id": assembly["id"],
+        "name": assembly["name"],
+        "tray": assembly["tray"],
+        "specimen_id": assembly["specimen_id"],
+        "version": assembly["version"],
+        "occupied_length_mm": assembly["occupied_length_mm"],
+        "total_gap_length_mm": assembly["total_gap_length_mm"],
+        "adopted_order_id": assembly["decision"]["order_id"],
+        "decision_basis": assembly["decision"]["basis"],
+        "duplicate_old_labels": assembly["duplicate_old_labels"],
+        "synthetic": assembly["synthetic"],
+        "updated_at": assembly["updated_at"],
+    }
+
+
+def register_assemblies(api, store, heavy):
+    @api.get("/assemblies")
+    def assemblies():
+        return jsonify({"items": [assembly_summary(item) for item in store.list_assemblies()]})
+
+    @api.post("/assemblies")
+    def assembly_create():
+        raw_document = request.form.get("document", "")
+        try:
+            payload = json.loads(raw_document)
+        except (TypeError, ValueError) as error:
+            raise InputError("Send the assembly specification as a JSON 'document' form field.") from error
+        with heavy:
+            assembly = create_assembly(store, payload, request.files)
+        return jsonify(assembly), 201
+
+    @api.get("/assemblies/<assembly_id>")
+    def assembly_show(assembly_id):
+        return jsonify(store.assembly(assembly_id))
+
+    @api.post("/assemblies/<assembly_id>/decision")
+    def assembly_decision(assembly_id):
+        return jsonify(override_decision(store, assembly_id, json_request()))
+
+    @api.get("/assemblies/<assembly_id>/segments/<segment_key>/photo/<layer>")
+    def assembly_segment_photo(assembly_id, segment_key, layer):
+        assembly = store.assembly(assembly_id)
+        segment = next(
+            (item for item in assembly["segments"] if item["segment_key"] == segment_key), None,
+        )
+        if segment is None:
+            raise MissingError("Segment not found in this assembly.")
+        layers = {
+            "working": "working_digest",
+            "preview": "preview_digest",
+            "thumbnail": "thumbnail_digest",
+            "original": "source_digest",
+        }
+        chosen = enumeration(layer, layers, "Photo layer")
+        photo = segment["photo"]
+        digest = photo[layers[chosen]]
+        if chosen == "original":
+            return send_file(
+                store.blobs.require(digest),
+                download_name=photo["name"],
+                as_attachment=True,
+                mimetype=photo["original_mime"],
+            )
+        return png_blob(store, digest)
+
+    @api.post("/training/assembly")
+    def assembly_training():
+        with heavy:
+            assembly, created = load_assembly_demo(store)
+        return jsonify(assembly), 201 if created else 200
+
+
 def create_app(data_dir=None):
     app = Flask(__name__, static_folder=None)
     chosen = Path(data_dir) if data_dir else Path(os.environ.get("CORESECTION_DATA", "data"))
@@ -503,6 +578,7 @@ def create_app(data_dir=None):
         return response
 
     register_training(api, store, heavy)
+    register_assemblies(api, store, heavy)
     register_specimens(api, store, heavy)
     register_measurements(api, store, heavy)
     register_artifacts(api, store, heavy)

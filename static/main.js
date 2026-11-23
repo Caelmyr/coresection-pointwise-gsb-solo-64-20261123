@@ -1,10 +1,12 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
-import {resultCard,specimenResultRows} from "./results.js";
+import {resultCard,specimenResultRows,showProfileSource} from "./results.js";
+import {assemblyPage,assemblyWizard,setAssemblyData} from "./assembly.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",assembly:null,assemblies:[]};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
+  ["assembly","Core assembly","frame"],
   ["references","Reference library","book"],
   ["studies","Core comparisons","plot"],
   ["received","Received evidence","archive"],
@@ -245,7 +247,10 @@ function studyPage() {
 
 function render() {
   chrome();
-  q("#main").innerHTML={collection,tile:tilePage,references:libraryPage,studies:studyPage,received:receivedPage}[state.page]();
+  q("#main").innerHTML={
+    collection,tile:tilePage,assembly:()=>assemblyPage(state.assembly),
+    references:libraryPage,studies:studyPage,received:receivedPage,
+  }[state.page]();
 }
 
 async function gatherTile(token=travel) {
@@ -280,6 +285,26 @@ async function route() {
   if (hash==="references") {
     const refs=await api("/api/library");
     if (token===travel) {state.refs=refs.items;state.page="references";render();}
+    return;
+  }
+  if (hash==="assembly" || hash.startsWith("assembly:")) {
+    const list=await api("/api/assemblies");
+    if (token!==travel) return;
+    state.assemblies=list.items;
+    setAssemblyData(list.items,null);
+    if (hash.startsWith("assembly:")) {
+      const id=hash.slice(9);
+      if (!/^[a-f0-9]{24}$/.test(id)) throw Error("This assembly link is invalid.");
+      const active=await api(`/api/assemblies/${id}`);
+      if (token!==travel) return;
+      state.assembly=active;
+      setAssemblyData(list.items,active);
+    } else {
+      state.assembly=null;
+      setAssemblyData(list.items,null);
+    }
+    state.page="assembly";
+    render();
     return;
   }
   if (hash==="studies") {
@@ -662,6 +687,39 @@ async function doAction(name,target) {
       }
     },
     "tile-open":()=>{location.hash="tile:"+id;},
+    "assembly-new":()=>assemblyWizard(modal,async created=>{
+      commitModal();
+      state.assemblies=(await api("/api/assemblies")).items;
+      setAssemblyData(state.assemblies,created);
+      state.assembly=created;
+      location.hash="assembly:"+created.id;
+      toast("Assembly archived with one adopted ordering.");
+    }),
+    "assembly-demo":async ()=>{
+      const created=await api("/api/training/assembly",{method:"POST",body:{}});
+      state.assemblies=(await api("/api/assemblies")).items;
+      setAssemblyData(state.assemblies,created);
+      state.assembly=created;
+      location.hash="assembly:"+created.id;
+      toast("Practice assembly ready.");
+    },
+    "assembly-open":()=>{location.hash="assembly:"+id;},
+    "assembly-override":()=>{
+      const record=state.assembly;
+      const target=record.field_orders.find(o=>o.order_id===id);
+      modal("Override the archived ordering?",
+        `<p class="notice">Switching to '${e(target.label)}' keeps both evaluations, but records that the automatic lamina recommendation was set aside by an operator.</p>`+
+        areaField("Reason for override","note","",1200),
+        "Switch archive order",async data=>{
+          const updated=await api(`/api/assemblies/${record.id}/decision`,{method:"POST",
+            body:{version:record.version,order_id:id,note:data.get("note")||""}});
+          state.assembly=updated;
+          setAssemblyData(state.assemblies,updated);
+          commitModal();
+          toast("Archive ordering switched; reason retained.");
+          render();
+        });
+    },
     "tile-new":()=>tileForm(),
     "tile-edit":()=>tileForm(state.tile),
     "tile-tab":()=>{state.tab=value;render();},
@@ -734,6 +792,10 @@ async function doAction(name,target) {
       render();
     },
     "result-layer":()=>{state.layer=value;render();},
+    "profile-source":()=>{
+      try { showProfileSource(JSON.parse(target.dataset.source)); }
+      catch (err) { toast("Source details are no longer available.",true); }
+    },
     "defect-choice":async ()=>{
       state.result=await api(`/api/results/${state.result.id}/observations/${marker}`,{method:"PUT",body:{version:state.result.version,decision:value,notes:""}});
       toast("Observation reviewed.");

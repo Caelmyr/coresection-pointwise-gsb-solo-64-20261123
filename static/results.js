@@ -99,8 +99,38 @@ function textureDetail(m) {
 }
 
 function profileDetail(m) {
-  return `<h3>Lightness along the marked line</h3>${plot([{values:m.rows.map(item=>item.lightness)}], "Lightness along the station band",{axis:`0–${n(m.line_length)} ${m.distance_unit}`})}
-    <details><summary>Sample station values</summary>${table(["Distance","Valid samples","L*","a*","b*"],m.rows.map(item=>[`${n(item.position,3)} ${item.position_unit}`,item.samples,n(item.lightness),n(item.a),n(item.b)]))}</details>`;
+  const station = item => item.samples
+    ? `<td>${n(item.position,3)} ${item.position_unit}</td><td>${item.samples}</td><td>${n(item.lightness)}</td><td>${n(item.a)}</td><td>${n(item.b)}</td><td>${item.depth_m==null?"—":n(item.depth_m,4)} m</td>
+       <td>${item.source
+         ? `<button class="link-button" type="button" data-do="profile-source" data-source='${JSON.stringify(item.source)}'>Seg ${e(item.source.segment_key)}${item.source.old_label?` · ${e(item.source.old_label)}`:""} · (${n(item.source.position_in_original[0],3)}, ${n(item.source.position_in_original[1],3)})</button>`
+         : ""}</td>`
+    : `<td>${n(item.position,3)} ${item.position_unit}</td><td>0</td><td colspan="3" class="gap-cell">No value · documented gap</td><td>${item.depth_m==null?"—":n(item.depth_m,4)} m</td><td class="gap-cell">${n(item.depth_offset_mm,1)} mm · missing interval</td>`;
+  return `<h3>Lightness along the marked line</h3>
+    <p class="plot-note">Stations across transparent gap bands stay empty; click a sourced station to open its original fracture face.</p>
+    ${plot([{values:m.rows.map(item=>item.lightness)}], "Lightness along the station band",{axis:`0–${n(m.line_length)} ${m.distance_unit}`})}
+    <details open><summary>Sample station values</summary><div class="table-wrap"><table><thead><tr>
+      <th>Distance</th><th>Valid samples</th><th>L*</th><th>a*</th><th>b*</th><th>Depth</th><th>Original-image source</th>
+    </tr></thead><tbody>${m.rows.map(item=>`<tr class="${item.samples?"":"row-gap"}">${station(item)}</tr>`).join("")}</tbody></table></div></details>`;
+}
+
+export function showProfileSource(source) {
+  const cross = source.pixel_in_original;
+  const url = `${source.photo_url}?x=${encodeURIComponent(source.position_in_original[0])}&y=${encodeURIComponent(source.position_in_original[1])}`;
+  const modal = document.querySelector("#dialog");
+  modal.className="wide";
+  modal.innerHTML=`<div class="dialog-head"><h2>Station source · segment ${e(source.segment_key)}${source.old_label?` · ${e(source.old_label)}`:""}</h2>
+    <button class="button tiny ghost" type="button" data-do="close">×</button></div>
+    <div class="source-viewer">
+      <div class="source-stage"><img src="${e(url)}" alt="Original fracture face for segment ${e(source.segment_key)}">
+      <span class="source-cross" style="left:${e(source.position_in_original[0]*100)}%;top:${e(source.position_in_original[1]*100)}%"></span></div>
+      <div class="source-meta">
+        <p><strong>Position in original photo:</strong> (${n(source.position_in_original[0],4)}, ${n(source.position_in_original[1],4)})</p>
+        <p><strong>Pixel in original:</strong> x=${n(cross[0],0)}, y=${n(cross[1],0)} of ${source.original_size.join(" × ")} px</p>
+        <p class="soft">${source.within_face?"Inside the photographed face.":"The station sits on a centred margin outside the photographed face; this is the nearest in-face coordinate."}</p>
+        <a class="button secondary" href="${e(source.photo_url)}" target="_blank" rel="noopener">Open working image</a>
+      </div>
+    </div>`;
+  if (!modal.open) modal.showModal();
 }
 
 function glareDetail(m) {

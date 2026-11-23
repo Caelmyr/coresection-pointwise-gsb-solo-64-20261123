@@ -69,7 +69,7 @@ def profile_features(lab_means, support, distance):
     }
 
 
-def measure_profile(frame, linear, domain, options):
+def measure_profile(frame, linear, domain, options, tile=None):
     endpoints = [options["start"], options["end"]]
     coords, delta = line_grid(frame.extent, *endpoints, options["samples"], options["band_pixels"])
     supported = frame.valid & ~frame.clipped & domain
@@ -79,6 +79,11 @@ def measure_profile(frame, linear, domain, options):
     if np.count_nonzero(valid) < 3:
         raise InputError("Mark a line that crosses more of the valid specimen.")
     length, unit = profile_distance(delta, frame.scale)
+    rows = row_values(lab, intensity, length, unit, counts, endpoints)
+    if tile is not None and tile.get("assembly"):
+        from .assembly import annotate_profile_rows
+
+        rows = annotate_profile_rows(tile, rows, frame)
     return {
         "endpoints": endpoints,
         "band_pixels": options["band_pixels"],
@@ -86,6 +91,6 @@ def measure_profile(frame, linear, domain, options):
         "distance_unit": unit,
         "supported_stations": int(np.count_nonzero(valid)),
         "requested_stations": len(counts),
-        "rows": row_values(lab, intensity, length, unit, counts, endpoints),
+        "rows": rows,
         "features": profile_features(lab, valid, length),
     }
