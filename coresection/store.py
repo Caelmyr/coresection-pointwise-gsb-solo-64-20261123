@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS metrology (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS metrology_tile ON metrology(tile_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS drill_plans (
+    id TEXT PRIMARY KEY,
+    tile_id TEXT NOT NULL REFERENCES specimens(id),
+    document TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS drill_plans_tile ON drill_plans(tile_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -472,5 +479,40 @@ class Store:
             self._tile(conn, chosen)
             rows = conn.execute(
                 "SELECT document FROM metrology WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
+            ).fetchall()
+            return [json.loads(row["document"]) for row in rows]
+
+    def save_drill_plan(self, fields):
+        record = {**fields, "id": make_id(), "created_at": timestamp()}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO drill_plans(id,tile_id,document,created_at) VALUES (?,?,?,?)",
+                (record["id"], record["tile_id"], document(record), record["created_at"]),
+            )
+            event(conn, record["tile_id"], "drill", f"Planned a {record['core_diameter_mm']:.0f} mm core: {record['title']}")
+        return record
+
+    def update_drill_plan(self, identifier, document_fields):
+        chosen = identity(identifier, "Drill plan ID")
+        with self.transaction(write=True) as conn:
+            row = conn.execute("SELECT document FROM drill_plans WHERE id=?", (chosen,)).fetchone()
+            record = artifact_row(row, "Drill plan")
+            record.update(document_fields)
+            conn.execute("UPDATE drill_plans SET document=? WHERE id=?", (document(record), chosen))
+            event(conn, record["tile_id"], "drill", f"Audited the drilled core: {record['title']}")
+            return record
+
+    def drill_plan(self, identifier):
+        chosen = identity(identifier, "Drill plan ID")
+        with self.connect() as conn:
+            row = conn.execute("SELECT document FROM drill_plans WHERE id=?", (chosen,)).fetchone()
+            return artifact_row(row, "Drill plan")
+
+    def list_drill_plans(self, tile_id):
+        chosen = identity(tile_id, "Specimen ID")
+        with self.connect() as conn:
+            self._tile(conn, chosen)
+            rows = conn.execute(
+                "SELECT document FROM drill_plans WHERE tile_id=? ORDER BY rowid DESC LIMIT 50", (chosen,),
             ).fetchall()
             return [json.loads(row["document"]) for row in rows]

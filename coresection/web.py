@@ -6,8 +6,9 @@ from threading import BoundedSemaphore
 from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
-from .analysis import approve_reference, evaluate
+from .analysis import approve_reference, evaluate, specimen_provenance
 from .demo import load_training, preview_photo
+from .drill import audit_drill, plan_drill, stored_overlay
 from .evidence import (
     artifact_json,
     create_evidence,
@@ -91,6 +92,18 @@ def png_blob(store, digest):
     if digest is None:
         raise MissingError("No image exists for this selected layer.")
     return send_file(store.blobs.require(digest), mimetype="image/png", conditional=True, max_age=48 * 3600)
+
+
+def _drill_plan_summary(record):
+    return {
+        key: record[key]
+        for key in (
+            "id", "title", "tile_id", "core_diameter_mm", "chosen_center", "alternate_center",
+            "advantage", "candidates", "created_at", "audit", "plan_overlay", "audit_overlay",
+            "layers", "source", "scale_xy", "frame_extent",
+        )
+        if key in record
+    }
 
 
 def register_specimens(api, store, heavy):
@@ -425,6 +438,49 @@ def register_desks(api, store, heavy):
         record = store.metrology(entry_id)
         name = filename_stem(record["title"], "geometry")
         return binary_response(artifact_json(record), "application/json", name + ".json")
+
+    @api.get("/specimens/<specimen_id>/drill-plans")
+    def drill_plan_list(specimen_id):
+        return jsonify({"items": [_drill_plan_summary(item)
+                                  for item in store.list_drill_plans(specimen_id)]})
+
+    @api.post("/specimens/<specimen_id>/drill-plans")
+    def drill_plan_create(specimen_id):
+        tile = store.tile(specimen_id)
+        with heavy:
+            document, overlay = plan_drill(store, tile, json_request())
+        record = store.save_drill_plan({
+            **document,
+            "specimen": specimen_provenance(tile),
+            "plan_overlay": stored_overlay(overlay, store.blobs),
+        })
+        return jsonify(_drill_plan_summary(record)), 201
+
+    @api.get("/drill-plans/<plan_id>")
+    def drill_plan_show(plan_id):
+        return jsonify(store.drill_plan(plan_id))
+
+    @api.post("/drill-plans/<plan_id>/audit")
+    def drill_plan_audit(plan_id):
+        plan = store.drill_plan(plan_id)
+        tile = store.tile(plan["tile_id"])
+        if plan.get("audit"):
+            raise ConflictError("This drill plan already has a saved post-drill audit.")
+        with heavy:
+            audit, overlay = audit_drill(store, tile, plan, json_request())
+        updated = store.update_drill_plan(plan_id, {"audit": audit,
+                                                    "audit_overlay": stored_overlay(overlay, store.blobs)})
+        return jsonify(updated)
+
+    @api.get("/drill-plans/<plan_id>/<layer>")
+    def drill_plan_image(plan_id, layer):
+        record = store.drill_plan(plan_id)
+        choices = {"plan.png": "plan_overlay", "audit.png": "audit_overlay"}
+        chosen = enumeration(layer, choices, "Drill plan image")
+        digest = record.get(choices[chosen])
+        if digest is None:
+            raise MissingError("That overlay has not been generated for this drill plan.")
+        return png_blob(store, digest)
 
 
 def register_training(api, store, heavy):

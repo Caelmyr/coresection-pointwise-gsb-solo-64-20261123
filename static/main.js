@@ -1,7 +1,7 @@
 import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:"",drillPlans:[],drillActive:null};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -22,6 +22,15 @@ let drawPoints=[];
 let drawLimit=0;
 let currentForm=null;
 let reviewUploads=[];
+let drillDraw=null;
+const DRILL_LAYERS={
+  brittle:{label:"Brittle edge",color:"#e76960",limit:6},
+  matrix:{label:"Matrix to keep",color:"#7ac48a",limit:6},
+  vein:{label:"Fine vein",color:"#74abe2",limit:6},
+  unreadable:{label:"Unclear boundary",color:"#d6b86a",limit:6},
+  centers:{label:"Drill centers (max 2)",color:"#f4c96d",limit:2,points:true},
+  gap:{label:"Actual gap",color:"#ec7e5c",limit:6},
+};
 
 function toast(message, isError=false) {
   clearTimeout(toastTimer);
@@ -187,7 +196,70 @@ function geometryPage() {
   return `<div class="grid-detail">${report}<div class="stack"><section class="card"><h3>Measure a visible shape</h3>
       <p class="soft">Trace along the image or measure visible support inside a saved sampling region.</p>
       <div class="actions">${btn("Trace a path","trace-add","primary","measure")}${btn("Measure region area","area-add","secondary","frame")}</div></section>
+      ${drillPanel()}
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
+}
+
+function drillPanel() {
+  const plans=state.drillPlans||[];
+  const active=state.drillActive;
+  const ready=Boolean(state.tile.plane)&&state.tile.width_mm&&state.tile.height_mm;
+  const rows=plans.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.title)}</strong>
+      <small>16 mm core · ${item.audit?"post-drill audit saved":"plan only"} · ${e(date(item.created_at))}</small></div>
+      ${btn("Open","drill-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("");
+  return `<section class="card stack"><h3>Core drill plan · 16 mm</h3>
+    ${ready?btn("Plan a 16 mm core","drill-add","primary","plus")
+      :`<p class="notice warn">Register the survey plane and set the physical specimen width and height before planning a 16 mm core.</p>`}
+    ${active?drillDetail(active):""}
+    <div class="divider-list">${rows||"<p class='soft'>No drill plans yet. Mark the brittle edge, the matrix to keep, the fine vein and two clamp-accessible centers.</p>"}</div></section>`;
+}
+
+function candidateCard(item,chosen) {
+  const verdict=item.feasible?`<span class="verdict ok">Clear to drill</span>`:`<span class="verdict bad">Blocked</span>`;
+  const overlap=Object.entries(item.overlap_pixels).filter(([,count])=>count>0)
+    .map(([name,count])=>`${name.replace(/_/g," ")}: ${count} px`).join(" · ");
+  return `<div class="candidate-card ${chosen?"chosen":""}">
+    <div class="title-row"><strong>${chosen?"Chosen center":"Alternate center"} (${n(item.center[0],3)}, ${n(item.center[1],3)})</strong>${verdict}</div>
+    <div class="metrics">
+      ${stat("Matrix inside",`${n(item.matrix_area_mm2_inside)} mm²`)}
+      ${stat("Vein inside",`${n(item.vein_area_mm2_inside)} mm²`)}
+      ${stat("Vein share",percent(item.vein_fraction_of_circle_percent))}
+      ${stat("Brittle clearance",item.clearance_mm.brittle_edge==null?"—":`${n(item.clearance_mm.brittle_edge)} mm`)}
+    </div>
+    ${overlap?`<p class="notice warn">${e(overlap)}</p>`:""}
+  </div>`;
+}
+
+function drillDetail(plan) {
+  const base=`/api/drill-plans/${plan.id}`;
+  const chosen=plan.candidates.find(item=>JSON.stringify(item.center)===JSON.stringify(plan.chosen_center));
+  const alternate=plan.candidates.find(item=>JSON.stringify(item.center)===JSON.stringify(plan.alternate_center));
+  const repeatReady=state.tile.photos.some(item=>item.registered_url);
+  let auditBlock="";
+  if (plan.audit) {
+    const m=plan.audit.metrics;
+    auditBlock=`<figure class="stage">${img(base+"/audit.png?ts="+Date.now(),"Post-drill audit overlay")}</figure>
+      <div class="metrics">
+        ${stat("Uncut inside circle",`${n(m.uncut_inside_circle_mm2)} mm²`)}
+        ${stat("Uncut share",percent(m.uncut_inside_circle_percent))}
+        ${stat("Overcut outside circle",`${n(m.overcut_outside_circle_mm2)} mm²`)}
+        ${stat("Overcut share",percent(m.overcut_outside_circle_percent))}
+        ${stat("Matched removal",`${n(m.matched_mm2)} mm²`)}
+        ${stat("Boundary set aside",`${n(m.indeterminate_boundary_mm2)} mm²`)}
+        ${stat("Gap center offset",m.gap_center_offset_mm==null?"—":`${n(m.gap_center_offset_mm)} mm`)}
+      </div>
+      <p class="soft">Indeterminate boundary pixels (unreadable junctions and off-photo ground) are excluded from both the uncut and overcut totals.</p>`;
+  } else if (repeatReady) {
+    auditBlock=`<div class="actions">${btn("Audit drilled core","drill-audit","secondary","check")}</div>
+      <p class="soft">Re-photograph the face, register it against the same survey plane, then trace the actual gap. The chosen 16 mm circle is reused unchanged.</p>`;
+  }
+  return `<div class="stack">
+    <figure class="stage">${img(base+"/plan.png?ts="+Date.now(),"Drill plan overlay")}</figure>
+    ${candidateCard(chosen,true)}
+    ${alternate?candidateCard(alternate,false):""}
+    <ul class="metric-note">${plan.advantage.map(line=>`<li>${e(line)}</li>`).join("")}</ul>
+    ${auditBlock}
+  </div>`;
 }
 
 function receivedPage() {
@@ -250,14 +322,16 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,drillPlans]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api(url+"/drill-plans"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
   state.packets=packets.items;
   state.activity=activity.items;
   state.metrology=metrology.items;
+  state.drillPlans=drillPlans.items;
+  if (state.drillActive) state.drillActive=state.drillPlans.find(item=>item.id===state.drillActive.id)||null;
   state.refs=refs.items;
 }
 
@@ -270,7 +344,7 @@ async function route() {
     const tile=await api(`/api/specimens/${id}`);
     if (token!==travel) return;
     if (state.tile?.id!==tile.id || state.page!=="tile") {
-      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;
+      state.tab="captures"; state.capture=null; state.result=null;state.layer="overlay";state.viewer="raw";state.metrologyActive=null;state.drillActive=null;
     }
     state.tile=tile;
     await gatherTile(token);
@@ -535,6 +609,185 @@ function geometryMeasurementForm(mode) {
   if (!area) prepareDrawing([],45);
 }
 
+function drillStage(image,alt) {
+  return `<div class="stage"><div class="capture-drawing" id="drill-stage">${img(image,alt)}
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="drill-overlay"></svg></div></div>`;
+}
+
+function polygonPoints(polygon) {
+  return polygon.map(([x,y])=>`${(x*1000).toFixed(2)},${(y*1000).toFixed(2)}`).join(" ");
+}
+
+function drillRender() {
+  const artist=q("#drill-overlay");
+  if (!artist||!drillDraw) return;
+  const {shapes,draft,points,active}=drillDraw;
+  const parts=[];
+  for (const [key,config] of Object.entries(DRILL_LAYERS)) {
+    if (key==="centers") continue;
+    for (const polygon of shapes[key]||[]) {
+      parts.push(`<polygon class="drill-poly ${key}" points="${polygonPoints(polygon)}"></polygon>`);
+    }
+  }
+  if (draft.length>=2) {
+    parts.push(`<polyline class="drill-poly ${active}" points="${polygonPoints(draft)}"></polyline>`);
+  }
+  for (const [index,[x,y]] of (points||[]).entries()) {
+    parts.push(`<circle class="drill-center" cx="${(x*1000).toFixed(2)}" cy="${(y*1000).toFixed(2)}" r="11"></circle>
+      <text class="drill-center-label" x="${(x*1000+16).toFixed(2)}" y="${(y*1000+12).toFixed(2)}">${index+1}</text>`);
+  }
+  artist.innerHTML=parts.join("");
+  const count=q("#drill-count");
+  if (count) {
+    const config=DRILL_LAYERS[active];
+    const used=config.points?points.length:(shapes[active]||[]).length+(draft.length?1:0);
+    count.textContent=`${used} of ${config.limit} ${config.points?"centers":"outlines"} on ${config.label}`;
+  }
+}
+
+function drillSwitchLayer(key) {
+  if (!drillDraw||key===drillDraw.active) return;
+  drillCloseShape();
+  drillDraw.active=key;
+  drillDraw.draft=[];
+  drillRender();
+  qa(".layer-tab",dialog).forEach(tab=>tab.classList.toggle("active",tab.dataset.value===key));
+}
+
+function drillClick(u,v) {
+  if (!drillDraw) return;
+  const config=DRILL_LAYERS[drillDraw.active];
+  if (config.points) {
+    if (drillDraw.points.length>=config.limit) { toast(`Only ${config.limit} drill centers are allowed.`,true); return; }
+    drillDraw.points.push([u,v]);
+  } else {
+    const closed=drillDraw.shapes[drillDraw.active]||[];
+    if (closed.length>=config.limit&&!drillDraw.draft.length) {
+      toast(`Layer ${config.label} already holds ${config.limit} outlines.`,true); return;
+    }
+    drillDraw.draft.push([u,v]);
+  }
+  drillRender();
+}
+
+function drillCloseShape() {
+  if (!drillDraw) return;
+  const active=drillDraw.active;
+  const config=DRILL_LAYERS[active];
+  if (config.points||drillDraw.draft.length<3) { drillDraw.draft=[]; return; }
+  drillDraw.shapes[active]=[...(drillDraw.shapes[active]||[]),drillDraw.draft.map(point=>[...point])];
+  drillDraw.draft=[];
+}
+
+function drillUndo() {
+  if (!drillDraw) return;
+  const config=DRILL_LAYERS[drillDraw.active];
+  if (config.points) drillDraw.points.pop();
+  else if (drillDraw.draft.length) drillDraw.draft.pop();
+  else {
+    const list=drillDraw.shapes[drillDraw.active]||[];
+    if (list.length) drillDraw.draft=list.pop();
+  }
+  drillRender();
+}
+
+function drillClearLayer() {
+  if (!drillDraw) return;
+  const config=DRILL_LAYERS[drillDraw.active];
+  if (config.points) drillDraw.points=[];
+  else { drillDraw.shapes[drillDraw.active]=[]; drillDraw.draft=[]; }
+  drillRender();
+}
+
+function drillTabs(keys) {
+  return `<div class="layer-tabs">${keys.map(key=>`<button type="button" class="layer-tab ${drillDraw.active===key?"active":""}"
+      data-do="drill-layer" data-value="${key}"><span class="swatch" style="background:${DRILL_LAYERS[key].color}"></span>${e(DRILL_LAYERS[key].label)}</button>`).join("")}</div>`;
+}
+
+function seedDrillShapes(plan) {
+  const shapes={brittle:[],matrix:[],vein:[],unreadable:[],gap:[]};
+  for (const key of ["brittle","matrix","vein","unreadable"]) {
+    shapes[key]=(plan?.layers?.[key]||[]).map(polygon=>polygon.map(point=>[...point]));
+  }
+  if (plan?.audit?.gap) shapes.gap=plan.audit.gap.map(polygon=>polygon.map(point=>[...point]));
+  return shapes;
+}
+
+function drillPlanForm() {
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
+  if (!base) throw Error("Set a base photo before planning the drill.");
+  drillDraw={active:"brittle",shapes:{brittle:[],matrix:[],vein:[],unreadable:[],gap:[]},draft:[],points:[]};
+  const keys=["brittle","matrix","vein","unreadable","centers"];
+  modal("Plan a 16 mm core",`
+    ${textField("Plan title","title","16 mm core plan",'required maxlength="90"')}
+    <p class="notice">Mark one layer at a time on the registered plane. Each outline closes when you start a new one or switch layers. The full 16 mm circle must stay off the brittle edge, off any unreadable patch and inside the readable photo.</p>
+    ${drillTabs(keys)}
+    ${drillStage(base.registered_url,"Registered plane for drill planning")}
+    <div class="actions">${btn("Close outline","drill-close","tiny secondary")}
+      ${btn("Undo last point","drill-undo","tiny ghost")}
+      ${btn("Clear layer","drill-clear","tiny ghost")}<span class="soft" id="drill-count"></span></div>`,
+    "Evaluate centers",async data=>{
+      drillCloseShape();
+      if (!drillDraw.shapes.brittle?.length) throw Error("Outline at least one brittle edge.");
+      if (!drillDraw.shapes.matrix?.length) throw Error("Outline the intact matrix you want to keep.");
+      if (!drillDraw.shapes.vein?.length) throw Error("Outline the fine mineral vein.");
+      if (drillDraw.points.length<1) throw Error("Mark at least one clamp-accessible drill center.");
+      const payload={
+        title:data.get("title")||"16 mm core plan",
+        layers:{
+          brittle:drillDraw.shapes.brittle,matrix:drillDraw.shapes.matrix,
+          vein:drillDraw.shapes.vein,unreadable:drillDraw.shapes.unreadable,
+        },
+        centers:drillDraw.points,
+      };
+      const saved=await api(tileUrl()+"/drill-plans",{method:"POST",body:payload});
+      state.drillActive=saved;
+      await gatherTile();
+      commitModal();
+      toast("Drill plan saved. The clearest center is marked on the overlay.");
+      render();
+    },true);
+  drillRender();
+}
+
+function drillAuditForm() {
+  const plan=state.drillActive;
+  if (!plan) throw Error("Open a saved drill plan before auditing it.");
+  if (plan.audit) throw Error("This plan already has a post-drill audit.");
+  const registered=state.tile.photos.filter(item=>item.registered_url);
+  const repeat=registered.find(item=>item.id!==plan.source.photo_id)||registered[0];
+  const shapes=seedDrillShapes(plan);
+  drillDraw={active:"gap",shapes,draft:[],points:[]};
+  const keys=["gap","brittle","matrix","vein","unreadable"];
+  modal("Audit the drilled core",`
+    <p class="notice">Register the repeat photograph on the same survey plane first, then trace the actual missing gap. Use “Unclear boundary” for junctions you cannot read; they are set aside from the uncut and overcut totals. The chosen 16 mm circle is reused from the plan.</p>
+    ${selectField("Repeat photo","photo_id",sources(registered,repeat.id))}
+    ${drillTabs(keys)}
+    ${drillStage(repeat.registered_url,"Registered repeat photo for gap tracing")}
+    <div class="actions">${btn("Close outline","drill-close","tiny secondary")}
+      ${btn("Undo last point","drill-undo","tiny ghost")}
+      ${btn("Clear layer","drill-clear","tiny ghost")}<span class="soft" id="drill-count"></span></div>`,
+    "Save audit",async data=>{
+      drillCloseShape();
+      if (!drillDraw.shapes.gap?.length) throw Error("Trace the actual missing gap with at least one outline.");
+      const payload={
+        photo_id:data.get("photo_id"),
+        layers:{
+          brittle:drillDraw.shapes.brittle,matrix:drillDraw.shapes.matrix,
+          vein:drillDraw.shapes.vein,unreadable:drillDraw.shapes.unreadable,
+        },
+        gap:drillDraw.shapes.gap,
+      };
+      const updated=await api(`/api/drill-plans/${plan.id}/audit`,{method:"POST",body:payload});
+      state.drillActive=updated;
+      await gatherTile();
+      commitModal();
+      toast("Post-drill audit saved against the original 16 mm circle.");
+      render();
+    },true);
+  drillRender();
+}
+
 function importEvidence() {
   modal("Verify evidence ZIP",field("Evidence ZIP","packet",'<input id="field-packet" name="packet" type="file" accept="application/zip,.zip" required>')+
     '<p class="soft">Select a CoreSection inspection archive up to 24 MiB. The viewer checks the declared images against their embedded digests.</p>',
@@ -714,6 +967,13 @@ async function doAction(name,target) {
     "trace-add":()=>geometryMeasurementForm("trace"),
     "area-add":()=>geometryMeasurementForm("area"),
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
+    "drill-add":()=>drillPlanForm(),
+    "drill-open":async ()=>{state.drillActive=await api("/api/drill-plans/"+id);render();},
+    "drill-audit":()=>drillAuditForm(),
+    "drill-layer":()=>drillSwitchLayer(value),
+    "drill-close":()=>{drillCloseShape();drillRender();},
+    "drill-undo":()=>drillUndo(),
+    "drill-clear":()=>drillClearLayer(),
     "receive-add":importEvidence,
     "received-open":()=>{state.receivedActive=state.received.find(item=>item.id===id);render();},
     "defect-note":()=>{
@@ -770,6 +1030,14 @@ async function runAction(target) {
 document.addEventListener("click",event=>{
   const target=event.target.closest("[data-do]");
   if (target) {void runAction(target);return;}
+  const drillStageEl=event.target.closest("#drill-stage");
+  if (drillStageEl&&drillDraw) {
+    const rect=drillStageEl.getBoundingClientRect();
+    const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+    const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
+    drillClick(Number(u.toFixed(6)),Number(v.toFixed(6)));
+    return;
+  }
   const drawing=event.target.closest("#draw-stage");
   if (drawing && drawPoints.length<drawLimit) {
     const rect=drawing.getBoundingClientRect();
@@ -821,6 +1089,7 @@ document.addEventListener("change",event=>{
 
 dialog.addEventListener("close",()=>{
   qa("[data-blob]",dialog).forEach(el=>URL.revokeObjectURL(el.dataset.blob));
+  drillDraw=null;
 });
 window.addEventListener("hashchange",()=>{void route().catch(displayFault);});
 api("/api/configuration").then(config=>{state.config=config;return route();}).catch(displayFault);
